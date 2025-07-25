@@ -58,9 +58,8 @@ impl SocketAddr {
     /// The string can be in one of the following formats:
     ///
     /// - Network socket address: `"127.0.0.1:8080"`, `"[::1]:8080"`
-    /// - Unix domain socket (filename): `"unix:///run/listen.sock"`
-    /// - Unix domain socket (abstract namespace):
-    ///   `"unix://@abstract.unix.socket"`
+    /// - Unix domain socket (pathname): `"unix:///run/listen.sock"`
+    /// - Unix domain socket (abstract): `"unix://@abstract.unix.socket"`
     ///
     /// # Examples
     ///

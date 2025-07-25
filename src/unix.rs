@@ -1,6 +1,5 @@
 //! Platform-specific code for Unix-like systems
 
-use std::os::linux::net::SocketAddrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{SocketAddr as StdSocketAddr, UnixListener};
 use std::path::Path;
@@ -29,12 +28,15 @@ impl SocketAddr {
     /// [`create_path_if_absent`](Self::create_path_if_absent).
     pub fn new(addr: &str) -> io::Result<Self> {
         match addr.chars().next() {
+            #[cfg(any(target_os = "android", target_os = "linux"))]
             Some('@') | Some('\0') if addr.len() > 1 => {
+                use std::os::linux::net::SocketAddrExt;
+
                 StdSocketAddr::from_abstract_name(&addr[1..]).map(Self::const_from)
             }
             Some('@') | Some('\0') => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "abstract socket address must not be empty",
+                "invalid unix domain socket addr: not support or malformed",
             )),
             Some(_) => StdSocketAddr::from_pathname(Path::new(addr)).map(Self::const_from),
             None => Err(io::Error::new(
@@ -47,7 +49,7 @@ impl SocketAddr {
     /// Create the socket file if it does not exist, then set the permissions to
     /// `0o644`.
     ///
-    /// For an abstract unix socket addr, this is a no-op.
+    /// For an abstract unix domain socket addr, this is a no-op.
     pub fn create_path_if_absent(self) -> io::Result<Self> {
         if let Some(pathname) = self.as_pathname() {
             if let Some(parent) = pathname.parent() {
@@ -91,15 +93,22 @@ impl SocketAddr {
     /// - For pathname socket addresses, it returns the path as a string.
     pub fn to_string_ext(&self) -> io::Result<String> {
         if let Some(pathname) = self.as_pathname() {
-            Ok(pathname
+            return Ok(pathname
                 .to_str()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid pathname"))?
-                .to_string())
-        } else if let Some(abstract_name) = self.as_abstract_name() {
-            Ok(format!("@{}", String::from_utf8_lossy(abstract_name)))
-        } else {
-            Err(io::Error::new(io::ErrorKind::Other, "invalid socket address"))
+                .to_string());
         }
+
+        #[cfg(any(target_os = "android", target_os = "linux"))]
+        {
+            use std::os::linux::net::SocketAddrExt;
+
+            if let Some(abstract_name) = self.as_abstract_name() {
+                return Ok(format!("@{}", String::from_utf8_lossy(abstract_name)));
+            }
+        }
+
+        Err(io::Error::new(io::ErrorKind::Other, "invalid socket address"))
     }
 }
 
@@ -165,7 +174,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "android", target_os = "linux"))]
     fn test_unix_socket_addr_abstract() {
+        use std::os::linux::net::SocketAddrExt;
+
         let addr = SocketAddr::new("@abstract.socket").unwrap();
         assert_eq!(&addr.as_ref().as_abstract_name().unwrap(), b"abstract.socket");
 
