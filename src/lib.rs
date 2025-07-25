@@ -12,7 +12,7 @@ pub mod unix;
 /// - `unix://@abstract.unix.socket` for an abstract socket address.
 pub const UNIX_URI_PREFIX: &str = "unix://";
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 /// A unified address type that can represent both
 /// [`std::net::SocketAddr`] and [`unix::SocketAddr`] (a wrapper over
 /// `std::os::unix::net::SocketAddr`).

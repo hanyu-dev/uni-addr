@@ -124,6 +124,51 @@ impl fmt::Display for SocketAddr {
     }
 }
 
+impl PartialEq for SocketAddr {
+    fn eq(&self, other: &Self) -> bool {
+        if let Some((l, r)) = self.as_pathname().zip(other.as_pathname()) {
+            return l == r;
+        }
+
+        #[cfg(any(target_os = "android", target_os = "linux"))]
+        {
+            use std::os::linux::net::SocketAddrExt;
+
+            if let Some((l, r)) = self.as_abstract_name().zip(other.as_abstract_name()) {
+                return l == r;
+            }
+        }
+
+        false
+    }
+}
+
+impl Eq for SocketAddr {}
+
+impl std::hash::Hash for SocketAddr {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        if let Some(pathname) = self.as_pathname() {
+            pathname.hash(state);
+
+            return;
+        }
+
+        #[cfg(any(target_os = "android", target_os = "linux"))]
+        {
+            use std::os::linux::net::SocketAddrExt;
+
+            if let Some(abstract_name) = self.as_abstract_name() {
+                b'\0'.hash(state);
+                abstract_name.hash(state);
+
+                return;
+            }
+        }
+
+        "(unamed)".hash(state);
+    }
+}
+
 #[cfg(feature = "feat-serde")]
 impl serde::Serialize for SocketAddr {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
