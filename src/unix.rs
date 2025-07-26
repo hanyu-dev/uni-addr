@@ -1,7 +1,7 @@
 //! Platform-specific code for Unix-like systems
 
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{SocketAddr as StdSocketAddr, UnixListener};
+use std::os::unix::net::{SocketAddr as StdSocketAddr, UnixListener, UnixStream};
 use std::path::Path;
 use std::{fmt, fs, io};
 
@@ -17,15 +17,33 @@ general_wrapper! {
 }
 
 impl SocketAddr {
-    /// Creates a new [`SocketAddr`] from a path.
+    /// Creates a new [`SocketAddr`] from its string representation.
     ///
-    /// - All strings that start with `@` or `\0` are treated as an abstract
-    ///   socket address.
-    /// - All other strings are treated as pathname socket addresses.
-    /// - Empty path is not supported (the unnamed one).
+    /// # Address Types
     ///
-    /// This will not create the file for a pathname socket address. See
-    /// [`create_path_if_absent`](Self::create_path_if_absent).
+    /// - **Abstract**: Strings starting with `@` or `\0` are interpreted as
+    ///   abstract socket addresses (Linux-specific namespace)
+    /// - **Pathname**: All other strings are treated as filesystem-based socket
+    ///   addresses with an actual file path
+    /// - **Unnamed**: Empty paths are not supported and will be rejected
+    ///
+    /// # Important Notes
+    ///
+    /// This method only parses the address string and does not perform any
+    /// filesystem operations. For pathname addresses, the corresponding
+    /// socket file will not be created automatically. Use
+    /// [`create_path_if_absent`](Self::create_path_if_absent) if you need
+    /// to ensure the socket file exists.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use uni_addr::unix::SocketAddr;
+    /// // Abstract socket (Linux-specific)
+    /// let abstract_addr = SocketAddr::new("@abstract.example.socket").unwrap();
+    /// // Pathname socket
+    /// let path_addr = SocketAddr::new("/tmp/example.sock").unwrap();
+    /// ```
     pub fn new(addr: &str) -> io::Result<Self> {
         match addr.chars().next() {
             #[cfg(any(target_os = "android", target_os = "linux"))]
@@ -46,11 +64,20 @@ impl SocketAddr {
         }
     }
 
-    /// Create the socket file if it does not exist, then set the permissions to
-    /// `0o644`.
-    ///
-    /// For an abstract unix domain socket addr, this is a no-op.
+    #[deprecated(since = "0.1.2", note = "Use `create_if_absent` instead")]
+    /// See [`Self::create_if_absent`].
     pub fn create_path_if_absent(self) -> io::Result<Self> {
+        self.create_if_absent(None)
+    }
+
+    /// Creates the socket file if it does not exist and sets its permissions
+    /// (`0o644` by default).
+    ///
+    /// This function ensures the socket file is properly initialized with read
+    /// permissions for all users and write permissions for the owner only.
+    /// For abstract Unix domain socket addresses, this operation is skipped
+    /// as no filesystem entry is created.
+    pub fn create_if_absent(self, permissions: Option<u32>) -> io::Result<Self> {
         if let Some(pathname) = self.as_pathname() {
             if let Some(parent) = pathname.parent() {
                 // Create parent directories if they do not exist
@@ -64,20 +91,22 @@ impl SocketAddr {
                 .write(true)
                 .truncate(true)
                 .open(pathname)?
-                .set_permissions(PermissionsExt::from_mode(0o644))?;
+                .set_permissions(PermissionsExt::from_mode(permissions.unwrap_or(0o644)))?;
         }
 
         Ok(self)
     }
 
     #[inline]
-    /// Bind and create a [`std::os::unix::net::UnixListener`].
+    /// Binds to the Unix domain socket address and creates a
+    /// [`std::os::unix::net::UnixListener`].
     pub fn bind_std(&self) -> io::Result<UnixListener> {
         UnixListener::bind_addr(self)
     }
 
     #[cfg(feature = "feat-tokio")]
-    /// Bind and create a [`tokio::net::UnixListener`].
+    /// Binds to the Unix domain socket address and creates a
+    /// [`tokio::net::UnixListener`].
     pub fn bind(&self) -> io::Result<tokio::net::UnixListener> {
         self.bind_std()
             .and_then(|l| {
@@ -87,10 +116,31 @@ impl SocketAddr {
             .and_then(tokio::net::UnixListener::from_std)
     }
 
-    /// Serializes the socket address to a string (may return error).
+    #[inline]
+    /// Connects to the Unix domain socket address and returns a
+    /// [`std::os::unix::net::UnixStream`].
+    pub fn connect_std(&self) -> io::Result<UnixStream> {
+        UnixStream::connect_addr(self)
+    }
+
+    #[cfg(feature = "feat-tokio")]
+    /// Connects to the Unix domain socket address and returns a
+    /// [`tokio::net::UnixStream`].
+    pub async fn connect(&self) -> io::Result<tokio::net::UnixStream> {
+        self.connect_std()
+            .and_then(|s| {
+                s.set_nonblocking(true)?;
+                Ok(s)
+            })
+            .and_then(tokio::net::UnixStream::from_std)
+    }
+
+    /// Serializes the Unix domain socket address to a string representation.
     ///
-    /// - For abstract socket addresses, it returns the name prefixed with `@`.
-    /// - For pathname socket addresses, it returns the path as a string.
+    /// # Returns
+    ///
+    /// - For abstract addresses: returns the name prefixed with `@`
+    /// - For pathname addresses: returns the filesystem path as a string
     pub fn to_string_ext(&self) -> io::Result<String> {
         if let Some(pathname) = self.as_pathname() {
             return Ok(pathname
@@ -209,7 +259,7 @@ mod tests {
     fn test_unix_socket_addr_with_create() {
         let addr = SocketAddr::new("/tmp/test_unix_socket_addr_with_create.socket")
             .unwrap()
-            .create_path_if_absent()
+            .create_if_absent(None)
             .unwrap();
 
         assert_eq!(
