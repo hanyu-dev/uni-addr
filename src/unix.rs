@@ -126,7 +126,7 @@ impl SocketAddr {
     #[cfg(feature = "feat-tokio")]
     /// Connects to the Unix domain socket address and returns a
     /// [`tokio::net::UnixStream`].
-    pub async fn connect(&self) -> io::Result<tokio::net::UnixStream> {
+    pub fn connect(&self) -> io::Result<tokio::net::UnixStream> {
         self.connect_std()
             .and_then(|s| {
                 s.set_nonblocking(true)?;
