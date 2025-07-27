@@ -24,7 +24,7 @@ pub const UNIX_URI_PREFIX: &str = "unix://";
 /// [`unix::SocketAddr`]'s serialization/deserialization behaviour.
 pub enum SocketAddr {
     /// See [`std::net::SocketAddr`].
-    Std(std::net::SocketAddr),
+    Inet(std::net::SocketAddr),
 
     #[cfg(unix)]
     /// See [`unix::SocketAddr`].
@@ -34,7 +34,7 @@ pub enum SocketAddr {
 impl fmt::Debug for SocketAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SocketAddr::Std(addr) => addr.fmt(f),
+            SocketAddr::Inet(addr) => addr.fmt(f),
             #[cfg(unix)]
             SocketAddr::Unix(addr) => addr.fmt(f),
         }
@@ -44,7 +44,7 @@ impl fmt::Debug for SocketAddr {
 impl fmt::Display for SocketAddr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SocketAddr::Std(addr) => addr.fmt(f),
+            SocketAddr::Inet(addr) => addr.fmt(f),
             #[cfg(unix)]
             SocketAddr::Unix(addr) => format_args!("{UNIX_URI_PREFIX}{addr}").fmt(f),
         }
@@ -89,7 +89,7 @@ impl SocketAddr {
         }
 
         addr.parse()
-            .map(SocketAddr::Std)
+            .map(SocketAddr::Inet)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "unknown format"))
     }
 
@@ -97,7 +97,7 @@ impl SocketAddr {
     /// Binds a standard (TCP) listener to the address.
     pub fn bind_std(&self) -> io::Result<listener::StdListener> {
         match self {
-            SocketAddr::Std(addr) => std::net::TcpListener::bind(addr).map(listener::StdListener::Tcp),
+            SocketAddr::Inet(addr) => std::net::TcpListener::bind(addr).map(listener::StdListener::Tcp),
             #[cfg(unix)]
             SocketAddr::Unix(addr) => addr.bind_std().map(listener::StdListener::Unix),
         }
@@ -108,7 +108,7 @@ impl SocketAddr {
     /// Binds a Tokio (TCP) listener to the address.
     pub async fn bind(&self) -> io::Result<listener::Listener> {
         match self {
-            SocketAddr::Std(addr) => tokio::net::TcpListener::bind(addr).await.map(listener::Listener::Tcp),
+            SocketAddr::Inet(addr) => tokio::net::TcpListener::bind(addr).await.map(listener::Listener::Tcp),
             #[cfg(unix)]
             SocketAddr::Unix(addr) => addr.bind().map(listener::Listener::Unix),
         }
@@ -148,7 +148,7 @@ mod tests {
         let addr = SocketAddr::new("127.0.0.1:8080").unwrap();
 
         match addr {
-            SocketAddr::Std(std_addr) => {
+            SocketAddr::Inet(std_addr) => {
                 assert_eq!(std_addr.ip().to_string(), "127.0.0.1");
                 assert_eq!(std_addr.port(), 8080);
             }
@@ -162,7 +162,7 @@ mod tests {
         let addr = SocketAddr::new("[::1]:8080").unwrap();
 
         match addr {
-            SocketAddr::Std(std_addr) => {
+            SocketAddr::Inet(std_addr) => {
                 assert_eq!(std_addr.ip().to_string(), "::1");
                 assert_eq!(std_addr.port(), 8080);
             }
@@ -177,7 +177,7 @@ mod tests {
         let addr = SocketAddr::new("unix:///tmp/test.sock").unwrap();
 
         match addr {
-            SocketAddr::Std(_) => unreachable!(),
+            SocketAddr::Inet(_) => unreachable!(),
             SocketAddr::Unix(unix_addr) => {
                 assert!(unix_addr.as_pathname().is_some());
             }
@@ -190,7 +190,7 @@ mod tests {
         let addr = SocketAddr::new("unix://@test.abstract").unwrap();
 
         match addr {
-            SocketAddr::Std(_) => unreachable!(),
+            SocketAddr::Inet(_) => unreachable!(),
             SocketAddr::Unix(unix_addr) => {
                 assert!(unix_addr.as_abstract_name().is_some());
             }
