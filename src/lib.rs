@@ -15,7 +15,7 @@ pub const UNIX_URI_PREFIX: &str = "unix://";
 #[derive(Clone, PartialEq, Eq, Hash)]
 /// A unified address type that can represent both
 /// [`std::net::SocketAddr`] and [`unix::SocketAddr`] (a wrapper over
-/// `std::os::unix::net::SocketAddr`).
+/// [`std::os::unix::net::SocketAddr`]).
 ///
 /// ## Notes
 ///
@@ -37,16 +37,6 @@ impl fmt::Debug for SocketAddr {
             SocketAddr::Inet(addr) => addr.fmt(f),
             #[cfg(unix)]
             SocketAddr::Unix(addr) => addr.fmt(f),
-        }
-    }
-}
-
-impl fmt::Display for SocketAddr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SocketAddr::Inet(addr) => addr.fmt(f),
-            #[cfg(unix)]
-            SocketAddr::Unix(addr) => format_args!("{UNIX_URI_PREFIX}{addr}").fmt(f),
         }
     }
 }
@@ -113,6 +103,14 @@ impl SocketAddr {
             SocketAddr::Unix(addr) => addr.bind().map(listener::Listener::Unix),
         }
     }
+
+    /// Serializes the address to a `String`.
+    pub fn to_string_ext(&self) -> Option<String> {
+        match self {
+            Self::Inet(addr) => Some(addr.to_string()),
+            Self::Unix(addr) => addr._to_os_string(UNIX_URI_PREFIX, "@").into_string().ok(),
+        }
+    }
 }
 
 #[cfg(feature = "feat-serde")]
@@ -121,7 +119,11 @@ impl serde::Serialize for SocketAddr {
     where
         S: serde::Serializer,
     {
-        format!("{self}").serialize(serializer)
+        serializer.serialize_str(
+            &self
+                .to_string_ext()
+                .ok_or_else(|| serde::ser::Error::custom("invalid UTF-8"))?,
+        )
     }
 }
 
@@ -131,8 +133,7 @@ impl<'de> serde::Deserialize<'de> for SocketAddr {
     where
         D: serde::Deserializer<'de>,
     {
-        let addr = <&str>::deserialize(deserializer)?;
-        Self::new(addr).map_err(serde::de::Error::custom)
+        Self::new(<&str>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -211,25 +212,24 @@ mod tests {
         // Unix sockets should be unsupported on non-Unix platforms
         let result = SocketAddr::new("unix:///tmp/test.sock");
 
-        assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Unsupported);
     }
 
     #[test]
     fn test_socket_addr_display() {
         let addr = SocketAddr::new("127.0.0.1:8080").unwrap();
-        assert_eq!(format!("{}", addr), "127.0.0.1:8080");
+        assert_eq!(&addr.to_string_ext().unwrap(), "127.0.0.1:8080");
 
         let addr = SocketAddr::new("[::1]:8080").unwrap();
-        assert_eq!(format!("{}", addr), "[::1]:8080");
+        assert_eq!(&addr.to_string_ext().unwrap(), "[::1]:8080");
 
         #[cfg(unix)]
         {
             let addr = SocketAddr::new("unix:///tmp/test.sock").unwrap();
-            assert_eq!(format!("{}", addr), "unix:///tmp/test.sock");
+            assert_eq!(&addr.to_string_ext().unwrap(), "unix:///tmp/test.sock");
 
             let addr = SocketAddr::new("unix://@test.abstract").unwrap();
-            assert_eq!(format!("{}", addr), "unix://@test.abstract");
+            assert_eq!(&addr.to_string_ext().unwrap(), "unix://@test.abstract");
         }
     }
 
@@ -242,33 +242,26 @@ mod tests {
     }
 
     #[test]
-    fn test_socket_addr_clone() {
-        let addr = SocketAddr::new("127.0.0.1:8080").unwrap();
-        let cloned = addr.clone();
-        assert_eq!(format!("{}", addr), format!("{}", cloned));
-    }
-
-    #[test]
     fn test_bind_std() {
         let addr = SocketAddr::new("127.0.0.1:0").unwrap();
         let _listener = addr.bind_std().unwrap();
     }
 
-    #[cfg(all(feature = "feat-tokio", test))]
+    #[cfg(feature = "feat-tokio")]
     #[tokio::test]
     async fn test_bind_tokio() {
         let addr = SocketAddr::new("127.0.0.1:0").unwrap();
         let _listener = addr.bind().await.unwrap();
     }
 
-    #[cfg(all(unix, feature = "feat-tokio", test))]
+    #[cfg(all(unix, feature = "feat-tokio"))]
     #[tokio::test]
     async fn test_bind_tokio_unix() {
-        let addr = SocketAddr::new("unix:///tmp/test.sock").unwrap();
+        let addr = SocketAddr::new("unix:///tmp/test_bind_tokio_unix.sock").unwrap();
         let _listener = addr.bind().await.unwrap();
     }
 
-    #[cfg(all(unix, feature = "feat-tokio", test))]
+    #[cfg(all(any(target_os = "android", target_os = "linux"), feature = "feat-tokio"))]
     #[tokio::test]
     async fn test_bind_tokio_unix_abstract() {
         let addr = SocketAddr::new("unix://@abstract.test").unwrap();
@@ -283,9 +276,9 @@ mod tests {
 
         #[cfg(unix)]
         {
-            assert!(SocketAddr::new("unix://").is_err()); // Empty unix path
-            assert!(SocketAddr::new("unix://@").is_err()); // Empty abstract
-                                                           // name
+            assert!(SocketAddr::new("unix://").is_ok()); // Empty path -> unnamed one
+            #[cfg(any(target_os = "android", target_os = "linux"))]
+            assert!(SocketAddr::new("unix://@").is_ok()); // Empty abstract one
         }
     }
 }
