@@ -1,6 +1,6 @@
 //! Platform-specific code for Unix-like systems
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::{CStr, OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::{SocketAddr as StdSocketAddr, UnixListener, UnixStream};
 use std::path::Path;
@@ -18,32 +18,37 @@ general_wrapper! {
 }
 
 impl SocketAddr {
-    /// Creates a new unix [`SocketAddr`] from its bytes string representation.
+    /// Creates a new unix [`SocketAddr`] from its string representation.
     ///
-    /// - Strings starting with `@` or `\0` are treated and parsed as abstract
-    ///   unix socket addresses (Linux-specific).
-    /// - All other strings are treated and parsed as pathname unix socket
-    ///   addresses.
-    /// - Empty strings are accepted, which will be treated as unnamed unix
-    ///   socket addresses, though.
+    /// # Address Types
     ///
-    /// # Important Notes
+    /// - Strings starting with `@` or `\0` are parsed as abstract unix socket
+    ///   addresses (Linux-specific).
+    /// - All other strings are parsed as pathname unix socket addresses.
+    /// - Empty strings create unnamed unix socket addresses.
     ///
-    /// This method does not perform any filesystem operations. For pathname
-    /// unix socket addresses, the file is not created automatically. If
-    /// you need to ensure the file exists and is with proper permissions,
-    /// use [`create_if_absent`](Self::create_if_absent).
+    /// # Important
+    ///
+    /// This method accepts an `OsStr` and does not guarantee proper null
+    /// termination. While pathname addresses reject interior null bytes,
+    /// abstract addresses accept them silently, potentially causing unexpected
+    /// behavior (e.g., `\0abstract` differs from `\0abstract\0\0\0\0\0...`).
+    ///
+    /// Use [`SocketAddr::from_bytes_until_nul`] to ensure only the portion
+    /// before the first null byte is used for address parsing.
     ///
     /// # Examples
     ///
     /// ```rust
     /// # use uni_addr::unix::SocketAddr;
     /// #[cfg(any(target_os = "android", target_os = "linux"))]
-    /// // Abstract one (Linux-specific)
+    /// // Abstract address (Linux-specific)
     /// let abstract_addr = SocketAddr::new("@abstract.example.socket").unwrap();
-    /// // Pathname one
+    ///
+    /// // Pathname address
     /// let pathname_addr = SocketAddr::new("/run/pathname.example.socket").unwrap();
-    /// // Unnamed one
+    ///
+    /// // Unnamed address
     /// let unnamed_addr = SocketAddr::new("").unwrap();
     /// ```
     pub fn new<S: AsRef<OsStr> + ?Sized>(addr: &S) -> io::Result<Self> {
@@ -90,9 +95,35 @@ impl SocketAddr {
     }
 
     #[inline]
-    /// See [`Self::new`].
-    pub fn new_from_bytes(bytes: &[u8]) -> io::Result<Self> {
+    /// Creates a new unix [`SocketAddr`] from bytes.
+    ///
+    /// # Note
+    ///
+    /// This method does not validate null terminators. Pathname addresses
+    /// will reject paths containing null bytes during parsing, but abstract
+    /// addresses accept null bytes silently, which may lead to unexpected
+    /// behavior.
+    ///
+    /// Consider using [`from_bytes_until_nul`](Self::from_bytes_until_nul)
+    /// for null-terminated parsing.
+    pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
         Self::new(OsStr::from_bytes(bytes))
+    }
+
+    /// Creates a new unix [`SocketAddr`] from bytes until the first null byte.
+    pub fn from_bytes_until_nul(bytes: &[u8]) -> io::Result<Self> {
+        let first_nul = match bytes {
+            [b'\0', rest @ ..] => CStr::from_bytes_until_nul(rest),
+            rest => CStr::from_bytes_until_nul(rest),
+        }
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bytes must be a valid C string with a null terminator",
+            )
+        })?;
+
+        Self::new(OsStr::from_bytes(first_nul.to_bytes()))
     }
 
     #[inline]
