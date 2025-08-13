@@ -2,7 +2,7 @@
 
 use std::ffi::{CStr, OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::{SocketAddr as StdSocketAddr, UnixListener, UnixStream};
+use std::os::unix::net::{SocketAddr as StdSocketAddr, UnixDatagram, UnixListener, UnixStream};
 use std::path::Path;
 use std::{fmt, fs, io};
 
@@ -127,15 +127,14 @@ impl SocketAddr {
     }
 
     #[inline]
-    /// Binds to the Unix socket address and creates a
-    /// [`std::os::unix::net::UnixListener`].
+    /// Creates a new [`UnixListener`] bound to the specified socket.
     pub fn bind_std(&self) -> io::Result<UnixListener> {
         UnixListener::bind_addr(self)
     }
 
     #[cfg(feature = "feat-tokio")]
-    /// Binds to the Unix socket address and creates a
-    /// [`tokio::net::UnixListener`].
+    /// Creates a new [`tokio::net::UnixListener`] bound to the specified
+    /// socket.
     pub fn bind(&self) -> io::Result<tokio::net::UnixListener> {
         self.bind_std()
             .and_then(|l| {
@@ -143,6 +142,23 @@ impl SocketAddr {
                 Ok(l)
             })
             .and_then(tokio::net::UnixListener::from_std)
+    }
+
+    #[inline]
+    /// Creates a Unix datagram socket bound to the given path.
+    pub fn bind_dgram_std(&self) -> io::Result<UnixDatagram> {
+        UnixDatagram::bind_addr(self)
+    }
+
+    #[cfg(feature = "feat-tokio")]
+    /// Creates a Unix datagram socket bound to the given path.
+    pub fn bind_dgram(&self) -> io::Result<tokio::net::UnixDatagram> {
+        self.bind_dgram_std()
+            .and_then(|d| {
+                d.set_nonblocking(true)?;
+                Ok(d)
+            })
+            .and_then(tokio::net::UnixDatagram::from_std)
     }
 
     #[inline]

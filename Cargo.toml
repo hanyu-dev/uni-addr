@@ -1,6 +1,6 @@
 [package]
 name = "uni-addr"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.70.0"
 
@@ -16,7 +16,7 @@ repository = "https://github.com/hanyu-dev/uni-addr"
 [dependencies]
 serde = { version = "1.0", optional = true }
 tokio = { version = "1.39", features = ["net"], optional = true }
-wrapper-lite = { version = "0.1.0", default-features = false }
+wrapper-lite = { version = "0.1.1", default-features = false }
 
 [dev-dependencies]
 tokio = { version = "1.47.0", features = ["rt", "macros"] }
