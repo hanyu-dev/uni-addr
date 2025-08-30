@@ -41,6 +41,26 @@ impl fmt::Debug for SocketAddr {
     }
 }
 
+impl From<std::net::SocketAddr> for SocketAddr {
+    fn from(addr: std::net::SocketAddr) -> Self {
+        SocketAddr::Inet(addr)
+    }
+}
+
+#[cfg(unix)]
+impl From<unix::SocketAddr> for SocketAddr {
+    fn from(addr: unix::SocketAddr) -> Self {
+        SocketAddr::Unix(addr)
+    }
+}
+
+#[cfg(all(unix, feature = "feat-tokio"))]
+impl From<tokio::net::unix::SocketAddr> for SocketAddr {
+    fn from(addr: tokio::net::unix::SocketAddr) -> Self {
+        SocketAddr::Unix(unix::SocketAddr::from(addr.into()))
+    }
+}
+
 impl SocketAddr {
     #[inline]
     /// Creates a new [`SocketAddr`] from its string representation.
