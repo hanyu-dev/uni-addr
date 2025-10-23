@@ -1,5 +1,6 @@
 //! # uni-addr
 
+use std::str::FromStr;
 use std::{fmt, io};
 
 pub mod listener;
@@ -58,6 +59,14 @@ impl From<unix::SocketAddr> for SocketAddr {
 impl From<tokio::net::unix::SocketAddr> for SocketAddr {
     fn from(addr: tokio::net::unix::SocketAddr) -> Self {
         SocketAddr::Unix(unix::SocketAddr::from(addr.into()))
+    }
+}
+
+impl FromStr for SocketAddr {
+    type Err = io::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        SocketAddr::new(s)
     }
 }
 
