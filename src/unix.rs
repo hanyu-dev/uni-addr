@@ -6,15 +6,13 @@ use std::os::unix::net::{SocketAddr as StdSocketAddr, UnixDatagram, UnixListener
 use std::path::Path;
 use std::{fmt, fs, io};
 
-use wrapper_lite::general_wrapper;
-
-general_wrapper! {
+wrapper_lite::general_wrapper! {
     #[wrapper_impl(Deref)]
     #[derive(Clone)]
     /// Wrapper over [`std::os::unix::net::SocketAddr`].
     ///
     /// See [`SocketAddr::new`] for more details.
-    pub SocketAddr(StdSocketAddr)
+    pub struct SocketAddr(StdSocketAddr);
 }
 
 impl SocketAddr {
