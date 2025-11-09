@@ -1,8 +1,8 @@
 //! Platform-specific code for Unix-like systems
 
-use std::ffi::{CStr, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
+use std::hash::{Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::{SocketAddr as StdSocketAddr, UnixDatagram, UnixListener, UnixStream};
 use std::path::Path;
 use std::{fmt, fs, io};
 
@@ -12,11 +12,11 @@ wrapper_lite::general_wrapper! {
     /// Wrapper over [`std::os::unix::net::SocketAddr`].
     ///
     /// See [`SocketAddr::new`] for more details.
-    pub struct SocketAddr(StdSocketAddr);
+    pub struct SocketAddr(std::os::unix::net::SocketAddr);
 }
 
 impl SocketAddr {
-    /// Creates a new unix [`SocketAddr`] from its string representation.
+    /// Creates a new [`SocketAddr`] from its string representation.
     ///
     /// # Address Types
     ///
@@ -25,15 +25,14 @@ impl SocketAddr {
     /// - All other strings are parsed as pathname unix socket addresses.
     /// - Empty strings create unnamed unix socket addresses.
     ///
-    /// # Important
+    /// # Notes
     ///
-    /// This method accepts an `OsStr` and does not guarantee proper null
+    /// This method accepts an [`OsStr`] and does not guarantee proper null
     /// termination. While pathname addresses reject interior null bytes,
     /// abstract addresses accept them silently, potentially causing unexpected
     /// behavior (e.g., `\0abstract` differs from `\0abstract\0\0\0\0\0...`).
-    ///
-    /// Use [`SocketAddr::from_bytes_until_nul`] to ensure only the portion
-    /// before the first null byte is used for address parsing.
+    /// Use [`SocketAddr::new_strict`] to ensure the abstract names do not
+    /// contain null bytes, too.
     ///
     /// # Examples
     ///
@@ -42,143 +41,120 @@ impl SocketAddr {
     /// #[cfg(any(target_os = "android", target_os = "linux"))]
     /// // Abstract address (Linux-specific)
     /// let abstract_addr = SocketAddr::new("@abstract.example.socket").unwrap();
-    ///
     /// // Pathname address
     /// let pathname_addr = SocketAddr::new("/run/pathname.example.socket").unwrap();
-    ///
     /// // Unnamed address
     /// let unnamed_addr = SocketAddr::new("").unwrap();
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address is invalid or unsupported on the
+    /// current platform.
+    ///
+    /// See [`SocketAddr::from_abstract_name`](std::os::linux::net::SocketAddrExt::from_abstract_name)
+    /// and [`StdSocketAddr::from_pathname`] for more details.
     pub fn new<S: AsRef<OsStr> + ?Sized>(addr: &S) -> io::Result<Self> {
         let addr = addr.as_ref();
 
         match addr.as_bytes() {
             #[cfg(any(target_os = "android", target_os = "linux"))]
-            [b'@', rest @ ..] | [b'\0', rest @ ..] => {
-                use std::os::linux::net::SocketAddrExt;
-
-                StdSocketAddr::from_abstract_name(rest).map(Self::const_from)
-            }
+            [b'@', rest @ ..] | [b'\0', rest @ ..] => Self::new_abstract(rest),
             #[cfg(not(any(target_os = "android", target_os = "linux")))]
             [b'@', ..] | [b'\0', ..] => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "abstract unix socket address is not supported",
             )),
-            _ => {
-                let _ = fs::remove_file(addr);
+            _ => Self::new_pathname(addr),
+        }
+    }
 
-                StdSocketAddr::from_pathname(addr).map(Self::const_from)
-            }
+    /// See [`SocketAddr::new`].
+    pub fn new_strict<S: AsRef<OsStr> + ?Sized>(addr: &S) -> io::Result<Self> {
+        let addr = addr.as_ref();
+
+        match addr.as_bytes() {
+            #[cfg(any(target_os = "android", target_os = "linux"))]
+            [b'@', rest @ ..] | [b'\0', rest @ ..] => Self::new_abstract_strict(rest),
+            #[cfg(not(any(target_os = "android", target_os = "linux")))]
+            [b'@', ..] | [b'\0', ..] => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "abstract unix socket address is not supported",
+            )),
+            _ => Self::new_pathname(addr),
         }
     }
 
     #[cfg(any(target_os = "android", target_os = "linux"))]
-    /// Creates a new abstract unix [`SocketAddr`].
+    /// Creates a Unix socket address in the abstract namespace.
+    ///
+    /// The abstract namespace is a Linux-specific extension that allows Unix
+    /// sockets to be bound without creating an entry in the filesystem.
+    /// Abstract sockets are unaffected by filesystem layout or permissions, and
+    /// no cleanup is necessary when the socket is closed.
+    ///
+    /// An abstract socket address name may contain any bytes, including zero.
+    /// However, we don't recommend using zero bytes, as they may lead to
+    /// unexpected behavior. To avoid this, consider using
+    /// [`new_abstract_strict`](Self::new_abstract_strict).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name is longer than `SUN_LEN - 1`.
     pub fn new_abstract(bytes: &[u8]) -> io::Result<Self> {
         use std::os::linux::net::SocketAddrExt;
 
-        StdSocketAddr::from_abstract_name(bytes).map(Self::const_from)
+        std::os::unix::net::SocketAddr::from_abstract_name(bytes).map(Self::const_from)
     }
 
-    /// Creates a new pathname unix [`SocketAddr`].
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    /// See [`SocketAddr::new_abstract`].
+    pub fn new_abstract_strict(bytes: &[u8]) -> io::Result<Self> {
+        use std::os::linux::net::SocketAddrExt;
+
+        if bytes.contains(&b'\0') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "parse abstract socket name in strict mode: reject NULL bytes",
+            ));
+        }
+
+        std::os::unix::net::SocketAddr::from_abstract_name(bytes).map(Self::const_from)
+    }
+
+    /// Constructs a [`SocketAddr`] with the family `AF_UNIX` and the provided
+    /// path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path is longer than `SUN_LEN` or if it contains
+    /// NULL bytes.
     pub fn new_pathname<P: AsRef<Path>>(pathname: P) -> io::Result<Self> {
-        StdSocketAddr::from_pathname(pathname).map(Self::const_from)
+        let _ = fs::remove_file(pathname.as_ref());
+
+        std::os::unix::net::SocketAddr::from_pathname(pathname).map(Self::const_from)
     }
 
     #[allow(clippy::missing_panics_doc)]
-    /// Creates a new unnamed unix [`SocketAddr`].
+    /// Creates an unnamed [`SocketAddr`].
     pub fn new_unnamed() -> Self {
-        // SAFEY: `from_pathname` will not fail at all.
-        StdSocketAddr::from_pathname("").map(Self::const_from).unwrap()
+        // SAFETY: `from_pathname` will not fail at all.
+        std::os::unix::net::SocketAddr::from_pathname("")
+            .map(Self::const_from)
+            .unwrap()
     }
 
     #[inline]
-    /// Creates a new unix [`SocketAddr`] from bytes.
+    /// Creates a new [`SocketAddr`] from bytes.
     ///
-    /// # Note
+    /// # Errors
     ///
-    /// This method does not validate null terminators. Pathname addresses
-    /// will reject paths containing null bytes during parsing, but abstract
-    /// addresses accept null bytes silently, which may lead to unexpected
-    /// behavior.
-    ///
-    /// Consider using [`from_bytes_until_nul`](Self::from_bytes_until_nul)
-    /// for null-terminated parsing.
+    /// See [`SocketAddr::new`].
     pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
         Self::new(OsStr::from_bytes(bytes))
     }
 
-    /// Creates a new unix [`SocketAddr`] from bytes until the first null byte.
-    pub fn from_bytes_until_nul(bytes: &[u8]) -> io::Result<Self> {
-        let first_nul = match bytes {
-            [b'\0', rest @ ..] => CStr::from_bytes_until_nul(rest),
-            rest => CStr::from_bytes_until_nul(rest),
-        }
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "bytes must be a valid C string with a null terminator",
-            )
-        })?;
-
-        Self::new(OsStr::from_bytes(first_nul.to_bytes()))
-    }
-
-    #[inline]
-    /// Creates a new [`UnixListener`] bound to the specified socket.
-    pub fn bind_std(&self) -> io::Result<UnixListener> {
-        UnixListener::bind_addr(self)
-    }
-
-    #[cfg(feature = "feat-tokio")]
-    /// Creates a new [`tokio::net::UnixListener`] bound to the specified
-    /// socket.
-    pub fn bind(&self) -> io::Result<tokio::net::UnixListener> {
-        self.bind_std()
-            .and_then(|l| {
-                l.set_nonblocking(true)?;
-                Ok(l)
-            })
-            .and_then(tokio::net::UnixListener::from_std)
-    }
-
-    #[inline]
-    /// Creates a Unix datagram socket bound to the given path.
-    pub fn bind_dgram_std(&self) -> io::Result<UnixDatagram> {
-        UnixDatagram::bind_addr(self)
-    }
-
-    #[cfg(feature = "feat-tokio")]
-    /// Creates a Unix datagram socket bound to the given path.
-    pub fn bind_dgram(&self) -> io::Result<tokio::net::UnixDatagram> {
-        self.bind_dgram_std()
-            .and_then(|d| {
-                d.set_nonblocking(true)?;
-                Ok(d)
-            })
-            .and_then(tokio::net::UnixDatagram::from_std)
-    }
-
-    #[inline]
-    /// Connects to the Unix socket address and returns a
-    /// [`std::os::unix::net::UnixStream`].
-    pub fn connect_std(&self) -> io::Result<UnixStream> {
-        UnixStream::connect_addr(self)
-    }
-
-    #[cfg(feature = "feat-tokio")]
-    /// Connects to the Unix socket address and returns a
-    /// [`tokio::net::UnixStream`].
-    pub fn connect(&self) -> io::Result<tokio::net::UnixStream> {
-        self.connect_std()
-            .and_then(|s| {
-                s.set_nonblocking(true)?;
-                Ok(s)
-            })
-            .and_then(tokio::net::UnixStream::from_std)
-    }
-
-    /// Serializes the Unix socket address to an `OsString`.
+    /// Serializes the [`SocketAddr`] to an `OsString`.
     ///
     /// # Returns
     ///
@@ -186,22 +162,24 @@ impl SocketAddr {
     /// - For pathname ones: returns the pathname
     /// - For unnamed ones: returns an empty string.
     pub fn to_os_string(&self) -> OsString {
-        self._to_os_string("", "\0")
+        self.to_os_string_impl("", "\0")
     }
 
     /// Likes [`to_os_string`](Self::to_os_string), but returns a `String`
-    /// instead of `OsString`, performing UTF-8 verification.
+    /// instead of `OsString`, performing lossy UTF-8 conversion.
     ///
     /// # Returns
     ///
     /// - For abstract ones: returns the name prefixed with **`@`**
     /// - For pathname ones: returns the pathname
     /// - For unnamed ones: returns an empty string.
-    pub fn to_string_ext(&self) -> Option<String> {
-        self._to_os_string("", "@").into_string().ok()
+    pub fn to_string_lossy(&self) -> String {
+        self.to_os_string_impl("", "@")
+            .to_string_lossy()
+            .into_owned()
     }
 
-    pub(crate) fn _to_os_string(&self, prefix: &str, abstract_identifier: &str) -> OsString {
+    pub(crate) fn to_os_string_impl(&self, prefix: &str, abstract_identifier: &str) -> OsString {
         let mut os_string = OsString::from(prefix);
 
         if let Some(pathname) = self.as_pathname() {
@@ -223,6 +201,7 @@ impl SocketAddr {
             }
         }
 
+        // An unnamed one...
         os_string
     }
 }
@@ -258,8 +237,8 @@ impl PartialEq for SocketAddr {
 
 impl Eq for SocketAddr {}
 
-impl std::hash::Hash for SocketAddr {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl Hash for SocketAddr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         if let Some(pathname) = self.as_pathname() {
             pathname.hash(state);
 
@@ -280,8 +259,8 @@ impl std::hash::Hash for SocketAddr {
 
         debug_assert!(self.is_unnamed(), "SocketAddr is not unnamed one");
 
-        // `Path` cannot contain null bytes, so we can safely use it as a
-        // sentinel value.
+        // `Path` cannot contain null bytes, and abstract names are started with
+        // null bytes, this is Ok.
         b"(unnamed)\0".hash(state);
     }
 }
@@ -292,11 +271,7 @@ impl serde::Serialize for SocketAddr {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(
-            &self
-                .to_string_ext()
-                .ok_or_else(|| serde::ser::Error::custom("invalid UTF-8"))?,
-        )
+        serializer.serialize_str(&self.to_string_lossy())
     }
 }
 
@@ -333,7 +308,7 @@ mod tests {
         let addr = SocketAddr::new(TEST_CASE).unwrap();
 
         assert_eq!(addr.to_os_string().to_str().unwrap(), TEST_CASE);
-        assert_eq!(addr.to_string_ext().unwrap(), TEST_CASE);
+        assert_eq!(addr.to_string_lossy(), TEST_CASE);
         assert_eq!(addr.as_pathname().unwrap().to_str().unwrap(), TEST_CASE);
     }
 

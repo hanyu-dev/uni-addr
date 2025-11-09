@@ -1,11 +1,11 @@
-//! # uni-addr
+#![doc = include_str!("../README.md")]
 
 use std::borrow::Cow;
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{fmt, io};
 
-pub mod listener;
 #[cfg(unix)]
 pub mod unix;
 
@@ -20,6 +20,7 @@ wrapper_lite::wrapper!(
     #[wrapper_impl(Display)]
     #[wrapper_impl(AsRef)]
     #[wrapper_impl(Deref)]
+    #[repr(align(cache))]
     #[derive(Clone, PartialEq, Eq, Hash)]
     /// A unified address type that can represent:
     ///
@@ -40,16 +41,16 @@ wrapper_lite::wrapper!(
     pub struct UniAddr(UniAddrInner);
 );
 
-impl From<std::net::SocketAddr> for UniAddr {
-    fn from(addr: std::net::SocketAddr) -> Self {
+impl From<SocketAddr> for UniAddr {
+    fn from(addr: SocketAddr) -> Self {
         UniAddr::const_from(UniAddrInner::Inet(addr))
     }
 }
 
 #[cfg(unix)]
-impl From<unix::SocketAddr> for UniAddr {
-    fn from(addr: unix::SocketAddr) -> Self {
-        UniAddr::const_from(UniAddrInner::Unix(addr))
+impl From<std::os::unix::net::SocketAddr> for UniAddr {
+    fn from(addr: std::os::unix::net::SocketAddr) -> Self {
+        UniAddr::const_from(UniAddrInner::Unix(addr.into()))
     }
 }
 
@@ -60,10 +61,45 @@ impl From<tokio::net::unix::SocketAddr> for UniAddr {
     }
 }
 
+#[cfg(unix)]
+impl From<crate::unix::SocketAddr> for UniAddr {
+    fn from(addr: crate::unix::SocketAddr) -> Self {
+        UniAddr::const_from(UniAddrInner::Unix(addr))
+    }
+}
+
 impl FromStr for UniAddr {
     type Err = ParseError;
 
     fn from_str(addr: &str) -> Result<Self, Self::Err> {
+        Self::new(addr)
+    }
+}
+
+#[cfg(feature = "feat-serde")]
+impl serde::Serialize for UniAddr {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_str())
+    }
+}
+
+#[cfg(feature = "feat-serde")]
+impl<'de> serde::Deserialize<'de> for UniAddr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::new(<&str>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+    }
+}
+
+impl UniAddr {
+    #[inline]
+    /// Creates a new [`UniAddr`] from its string representation.
+    pub fn new(addr: &str) -> Result<Self, ParseError> {
         if addr.is_empty() {
             return Err(ParseError::Empty);
         }
@@ -87,29 +123,170 @@ impl FromStr for UniAddr {
             return Err(ParseError::InvalidPort);
         };
 
-        {
-            let Some(char) = host.chars().next() else {
-                return Err(ParseError::InvalidHost);
-            };
-
-            if char.is_ascii_alphabetic() {
-                if port.parse::<u16>().is_err() {
-                    return Err(ParseError::InvalidPort);
-                }
-
-                return Ok(Self::const_from(UniAddrInner::Host(Arc::from(addr))));
-            }
-        }
-
-        if let Ok(addr) = addr.parse::<std::net::SocketAddr>() {
-            return Ok(Self::const_from(UniAddrInner::Inet(addr)));
-        }
-
-        if port.parse::<u16>().is_err() {
+        let Ok(port) = port.parse::<u16>() else {
             return Err(ParseError::InvalidPort);
+        };
+
+        // Short-circuit: IPv4 address starts with a digit.
+        if host.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return Ipv4Addr::from_str(host)
+                .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, port)))
+                .map(UniAddrInner::Inet)
+                .map(Self::const_from)
+                .map_err(|_| ParseError::InvalidHost)
+                .or_else(|_| {
+                    // A host name may also start with a digit.
+                    Self::new_host(addr, Some((host, port)))
+                });
         }
+
+        // Short-circuit: if starts with '[' and ends with ']', may be an IPv6 address
+        // and can never be a host.
+        if let Some(ipv6_addr) = host.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            return Ipv6Addr::from_str(ipv6_addr)
+                .map(|ip| SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)))
+                .map(UniAddrInner::Inet)
+                .map(Self::const_from)
+                .map_err(|_| ParseError::InvalidHost);
+        }
+
+        // Fallback: check if is a valid host name.
+        Self::new_host(addr, Some((host, port)))
+    }
+
+    /// Creates a new [`UniAddr`] from a string containing a host name and port,
+    /// like `example.com:8080`.
+    pub fn new_host(addr: &str, parsed: Option<(&str, u16)>) -> Result<Self, ParseError> {
+        let (hostname, _port) = match parsed {
+            Some((hostname, port)) => (hostname, port),
+            None => addr
+                .rsplit_once(':')
+                .ok_or(ParseError::InvalidPort)
+                .and_then(|(hostname, port)| {
+                    let Ok(port) = port.parse::<u16>() else {
+                        return Err(ParseError::InvalidPort);
+                    };
+
+                    Ok((hostname, port))
+                })?,
+        };
+
+        Self::validate_host_name(hostname.as_bytes()).map_err(|_| ParseError::InvalidHost)?;
 
         Ok(Self::const_from(UniAddrInner::Host(Arc::from(addr))))
+    }
+
+    // https://github.com/rustls/pki-types/blob/b8c04aa6b7a34875e2c4a33edc9b78d31da49523/src/server_name.rs
+    const fn validate_host_name(input: &[u8]) -> Result<(), ()> {
+        enum State {
+            Start,
+            Next,
+            NumericOnly { len: usize },
+            NextAfterNumericOnly,
+            Subsequent { len: usize },
+            Hyphen { len: usize },
+        }
+
+        use State::*;
+
+        let mut state = Start;
+
+        /// "Labels must be 63 characters or less."
+        const MAX_LABEL_LENGTH: usize = 63;
+
+        /// https://devblogs.microsoft.com/oldnewthing/20120412-00/?p=7873
+        const MAX_NAME_LENGTH: usize = 253;
+
+        if input.len() > MAX_NAME_LENGTH {
+            return Err(());
+        }
+
+        let mut idx = 0;
+        while idx < input.len() {
+            let ch = input[idx];
+            state = match (state, ch) {
+                (Start | Next | NextAfterNumericOnly | Hyphen { .. }, b'.') => {
+                    return Err(());
+                }
+                (Subsequent { .. }, b'.') => Next,
+                (NumericOnly { .. }, b'.') => NextAfterNumericOnly,
+                (Subsequent { len } | NumericOnly { len } | Hyphen { len }, _)
+                    if len >= MAX_LABEL_LENGTH =>
+                {
+                    return Err(());
+                }
+                (Start | Next | NextAfterNumericOnly, b'0'..=b'9') => NumericOnly { len: 1 },
+                (NumericOnly { len }, b'0'..=b'9') => NumericOnly { len: len + 1 },
+                (Start | Next | NextAfterNumericOnly, b'a'..=b'z' | b'A'..=b'Z' | b'_') => {
+                    Subsequent { len: 1 }
+                }
+                (Subsequent { len } | NumericOnly { len } | Hyphen { len }, b'-') => {
+                    Hyphen { len: len + 1 }
+                }
+                (
+                    Subsequent { len } | NumericOnly { len } | Hyphen { len },
+                    b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'0'..=b'9',
+                ) => Subsequent { len: len + 1 },
+                _ => return Err(()),
+            };
+            idx += 1;
+        }
+
+        if matches!(
+            state,
+            Start | Hyphen { .. } | NumericOnly { .. } | NextAfterNumericOnly
+        ) {
+            return Err(());
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    /// Serializes the address to a string.
+    pub fn to_str(&self) -> Cow<'_, str> {
+        self.as_inner().to_str()
+    }
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// See [`UniAddr`].
+///
+/// Generally, you should use [`UniAddr`] instead of this type directly, as
+/// we expose this type only for easier pattern matching. A valid [`UniAddr`]
+/// can be constructed only through [`FromStr`] implementation.
+pub enum UniAddrInner {
+    /// See [`SocketAddr`](std::net::SocketAddr).
+    Inet(std::net::SocketAddr),
+
+    #[cfg(unix)]
+    /// See [`SocketAddr`](crate::unix::SocketAddr).
+    Unix(crate::unix::SocketAddr),
+
+    /// A host name with port. See [`ToSocketAddrs`](std::net::ToSocketAddrs).
+    Host(Arc<str>),
+}
+
+impl fmt::Display for UniAddrInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.to_str().fmt(f)
+    }
+}
+
+impl UniAddrInner {
+    #[inline]
+    /// Serializes the address to a string.
+    pub fn to_str(&self) -> Cow<'_, str> {
+        match self {
+            Self::Inet(addr) => addr.to_string().into(),
+            Self::Unix(addr) => addr
+                .to_os_string_impl(UNIX_URI_PREFIX, "@")
+                .to_string_lossy()
+                .to_string()
+                .into(),
+            Self::Host(host) => Cow::Borrowed(host),
+        }
     }
 }
 
@@ -119,7 +296,7 @@ pub enum ParseError {
     /// Empty input string
     Empty,
 
-    /// Missing host address
+    /// Invalid or missing hostname, or an invalid Ipv4 / IPv6 address
     InvalidHost,
 
     /// Invalid address format: missing or invalid port
@@ -153,237 +330,9 @@ impl std::error::Error for ParseError {
     }
 }
 
-#[cfg(feature = "feat-serde")]
-impl serde::Serialize for UniAddr {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_str())
-    }
-}
-
-#[cfg(feature = "feat-serde")]
-impl<'de> serde::Deserialize<'de> for UniAddr {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Self::new(<&str>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
-    }
-}
-
-impl UniAddr {
-    #[inline]
-    /// Creates a new [`UniAddr`] from its string representation.
-    pub fn new(addr: &str) -> Result<Self, ParseError> {
-        addr.parse()
-    }
-
-    #[inline]
-    /// Serializes the address to a string.
-    pub fn to_str(&self) -> Cow<'_, str> {
-        match self.as_inner() {
-            UniAddrInner::Inet(addr) => addr.to_string().into(),
-            UniAddrInner::Unix(addr) => addr
-                ._to_os_string(UNIX_URI_PREFIX, "@")
-                .to_string_lossy()
-                .to_string()
-                .into(),
-            UniAddrInner::Host(host) => (&**host).into(),
-        }
-    }
-}
-
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// See [`UniAddr`].
-///
-/// Generally, you should use [`UniAddr`] instead of this type directly, as
-/// we expose this type only for easier pattern matching. A valid [`UniAddr`]
-/// can be constructed only through [`FromStr`] implementation.
-pub enum UniAddrInner {
-    /// See [`std::net::SocketAddr`].
-    Inet(std::net::SocketAddr),
-
-    #[cfg(unix)]
-    /// See [`unix::SocketAddr`].
-    Unix(unix::SocketAddr),
-
-    /// A host name with port. See [`ToSocketAddrs`](std::net::ToSocketAddrs).
-    Host(Arc<str>),
-}
-
-impl fmt::Display for UniAddrInner {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Inet(addr) => addr.fmt(f),
-            #[cfg(unix)]
-            Self::Unix(addr) => write!(f, "{}", addr._to_os_string(UNIX_URI_PREFIX, "@").to_string_lossy()),
-            Self::Host(host) => host.fmt(f),
-        }
-    }
-}
-
-#[deprecated(since = "0.2.4", note = "Please use `UniAddr` instead")]
-#[derive(Clone, PartialEq, Eq, Hash)]
-/// A unified address type that can represent both
-/// [`std::net::SocketAddr`] and [`unix::SocketAddr`] (a wrapper over
-/// [`std::os::unix::net::SocketAddr`]).
-///
-/// ## Notes
-///
-/// For Unix domain sockets addresses, serialization/deserialization will be
-/// performed in URI format (see [`UNIX_URI_PREFIX`]), which is different from
-/// [`unix::SocketAddr`]'s serialization/deserialization behaviour.
-pub enum SocketAddr {
-    /// See [`std::net::SocketAddr`].
-    Inet(std::net::SocketAddr),
-
-    #[cfg(unix)]
-    /// See [`unix::SocketAddr`].
-    Unix(unix::SocketAddr),
-}
-
-#[allow(deprecated)]
-impl fmt::Debug for SocketAddr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SocketAddr::Inet(addr) => addr.fmt(f),
-            #[cfg(unix)]
-            SocketAddr::Unix(addr) => addr.fmt(f),
-        }
-    }
-}
-
-#[allow(deprecated)]
-impl From<std::net::SocketAddr> for SocketAddr {
-    fn from(addr: std::net::SocketAddr) -> Self {
-        SocketAddr::Inet(addr)
-    }
-}
-
-#[allow(deprecated)]
-#[cfg(unix)]
-impl From<unix::SocketAddr> for SocketAddr {
-    fn from(addr: unix::SocketAddr) -> Self {
-        SocketAddr::Unix(addr)
-    }
-}
-
-#[allow(deprecated)]
-#[cfg(all(unix, feature = "feat-tokio"))]
-impl From<tokio::net::unix::SocketAddr> for SocketAddr {
-    fn from(addr: tokio::net::unix::SocketAddr) -> Self {
-        SocketAddr::Unix(unix::SocketAddr::from(addr.into()))
-    }
-}
-
-#[allow(deprecated)]
-impl FromStr for SocketAddr {
-    type Err = io::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        SocketAddr::new(s)
-    }
-}
-
-#[allow(deprecated)]
-impl SocketAddr {
-    #[inline]
-    /// Creates a new [`SocketAddr`] from its string representation.
-    ///
-    /// The string can be in one of the following formats:
-    ///
-    /// - Network socket address: `"127.0.0.1:8080"`, `"[::1]:8080"`
-    /// - Unix domain socket (pathname): `"unix:///run/listen.sock"`
-    /// - Unix domain socket (abstract): `"unix://@abstract.unix.socket"`
-    ///
-    /// # Examples
-    ///
-    /// ```rust
-    /// # use uni_addr::SocketAddr;
-    /// // Network addresses
-    /// let addr_v4 = SocketAddr::new("127.0.0.1:8080").unwrap();
-    /// let addr_v6 = SocketAddr::new("[::1]:8080").unwrap();
-    ///
-    /// // Unix domain sockets
-    /// let addr_unix_filename = SocketAddr::new("unix:///run/listen.sock").unwrap();
-    /// let addr_unix_abstract = SocketAddr::new("unix://@abstract.unix.socket").unwrap();
-    /// ```
-    ///
-    /// See [`unix::SocketAddr::new`] for more details on Unix socket address
-    /// formats.
-    pub fn new(addr: &str) -> io::Result<Self> {
-        if let Some(addr) = addr.strip_prefix(UNIX_URI_PREFIX) {
-            #[cfg(unix)]
-            return unix::SocketAddr::new(addr).map(SocketAddr::Unix);
-
-            #[cfg(not(unix))]
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "Unix socket addresses are not supported on this platform",
-            ));
-        }
-
-        addr.parse()
-            .map(SocketAddr::Inet)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "unknown format"))
-    }
-
-    #[inline]
-    /// Binds a standard (TCP) listener to the address.
-    pub fn bind_std(&self) -> io::Result<listener::StdListener> {
-        match self {
-            SocketAddr::Inet(addr) => std::net::TcpListener::bind(addr).map(listener::StdListener::Tcp),
-            #[cfg(unix)]
-            SocketAddr::Unix(addr) => addr.bind_std().map(listener::StdListener::Unix),
-        }
-    }
-
-    #[cfg(feature = "feat-tokio")]
-    #[inline]
-    /// Binds a Tokio (TCP) listener to the address.
-    pub async fn bind(&self) -> io::Result<listener::Listener> {
-        match self {
-            SocketAddr::Inet(addr) => tokio::net::TcpListener::bind(addr).await.map(listener::Listener::Tcp),
-            #[cfg(unix)]
-            SocketAddr::Unix(addr) => addr.bind().map(listener::Listener::Unix),
-        }
-    }
-
-    /// Serializes the address to a `String`.
-    pub fn to_string_ext(&self) -> Option<String> {
-        match self {
-            Self::Inet(addr) => Some(addr.to_string()),
-            Self::Unix(addr) => addr._to_os_string(UNIX_URI_PREFIX, "@").into_string().ok(),
-        }
-    }
-}
-
-#[allow(deprecated)]
-#[cfg(feature = "feat-serde")]
-impl serde::Serialize for SocketAddr {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(
-            &self
-                .to_string_ext()
-                .ok_or_else(|| serde::ser::Error::custom("invalid UTF-8"))?,
-        )
-    }
-}
-
-#[allow(deprecated)]
-#[cfg(feature = "feat-serde")]
-impl<'de> serde::Deserialize<'de> for SocketAddr {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Self::new(<&str>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+impl From<ParseError> for io::Error {
+    fn from(value: ParseError) -> Self {
+        io::Error::new(io::ErrorKind::Other, value)
     }
 }
 

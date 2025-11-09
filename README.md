@@ -4,11 +4,7 @@
 [![docs.rs](https://img.shields.io/docsrs/uni-addr)](https://docs.rs/crate/uni-addr/latest)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/license/mit/)
 
-This crate provides a unified address type that can represent both `std::net::SocketAddr` and `std::os::unix::net::SocketAddr`.
-
-## MSRV
-
-1.70.0
+This crate provides a unified address type that can represent a `std::net::SocketAddr`, a `std::os::unix::net::SocketAddr`, or a host name with port.
 
 ## LICENSE
 
