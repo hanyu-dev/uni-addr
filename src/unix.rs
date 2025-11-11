@@ -112,7 +112,7 @@ impl SocketAddr {
     pub fn new_abstract_strict(bytes: &[u8]) -> io::Result<Self> {
         use std::os::linux::net::SocketAddrExt;
 
-        if bytes.contains(&b'\0') {
+        if bytes.is_empty() || bytes.contains(&b'\0') {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "parse abstract socket name in strict mode: reject NULL bytes",
