@@ -1,6 +1,6 @@
 //! Platform-specific code for Unix-like systems
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::{CStr, OsStr, OsString};
 use std::hash::{Hash, Hasher};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -152,6 +152,38 @@ impl SocketAddr {
     /// See [`SocketAddr::new`].
     pub fn from_bytes(bytes: &[u8]) -> io::Result<Self> {
         Self::new(OsStr::from_bytes(bytes))
+    }
+
+    #[inline]
+    /// Creates a new [`SocketAddr`] from bytes with null termination.
+    ///
+    /// Notes that for abstract addresses, the first byte is also `\0`, which is
+    /// not treated as the termination byte. And the abstract name starts from
+    /// the second byte. cannot be empty or contain interior null bytes, i.e.,
+    /// we will reject bytes like `b"\0\0\0..."`. Although `\0\0...` is a valid
+    /// abstract name, we will reject it to avoid potential confusion. See
+    /// [`SocketAddr::new_abstract_strict`] for more details.
+    ///
+    /// # Errors
+    ///
+    /// See [`SocketAddr::new`].
+    pub fn from_bytes_until_nul(bytes: &[u8]) -> io::Result<Self> {
+        match bytes {
+            [b'\0', rest @ ..] => {
+                let addr = CStr::from_bytes_until_nul(rest)
+                    .map(|rest| rest.to_bytes())
+                    .unwrap_or(rest);
+
+                Self::new_abstract_strict(addr)
+            }
+            _ => {
+                let addr = CStr::from_bytes_until_nul(bytes)
+                    .map(|rest| rest.to_bytes())
+                    .unwrap_or(bytes);
+
+                Self::new_pathname(OsStr::from_bytes(addr))
+            }
+        }
     }
 
     /// Serializes the [`SocketAddr`] to an `OsString`.
