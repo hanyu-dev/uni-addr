@@ -92,7 +92,7 @@ impl<'de> serde::Deserialize<'de> for UniAddr {
     where
         D: serde::Deserializer<'de>,
     {
-        Self::new(<&str>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+        Self::new(&String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 
