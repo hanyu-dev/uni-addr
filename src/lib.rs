@@ -118,7 +118,7 @@ impl UniAddr {
         }
 
         #[cfg(not(unix))]
-        if let Some(addr) = addr.strip_prefix(UNIX_URI_PREFIX) {
+        if let Some(_addr) = addr.strip_prefix(UNIX_URI_PREFIX) {
             return Err(ParseError::Unsupported);
         }
 
@@ -288,6 +288,7 @@ impl UniAddrInner {
     pub fn to_str(&self) -> Cow<'_, str> {
         match self {
             Self::Inet(addr) => addr.to_string().into(),
+            #[cfg(unix)]
             Self::Unix(addr) => addr
                 .to_os_string_impl(UNIX_URI_PREFIX, "@")
                 .to_string_lossy()
@@ -360,7 +361,7 @@ mod tests {
                 assert_eq!(std_addr.ip().to_string(), "127.0.0.1");
                 assert_eq!(std_addr.port(), 8080);
             }
-            _ => panic!("Expected Inet address, got {:?}", addr),
+            _ => panic!("Got {:?}", addr),
         }
     }
 
@@ -373,8 +374,7 @@ mod tests {
                 assert_eq!(std_addr.ip().to_string(), "::1");
                 assert_eq!(std_addr.port(), 8080);
             }
-            #[cfg(unix)]
-            _ => unreachable!(),
+            _ => panic!("Got {:?}", addr),
         }
     }
 
@@ -387,7 +387,7 @@ mod tests {
             UniAddrInner::Unix(unix_addr) => {
                 assert!(unix_addr.as_pathname().is_some());
             }
-            _ => unreachable!(),
+            _ => panic!("Got {:?}", addr),
         }
     }
 
@@ -400,7 +400,7 @@ mod tests {
             UniAddrInner::Unix(unix_addr) => {
                 assert!(unix_addr.as_abstract_name().is_some());
             }
-            _ => unreachable!(),
+            _ => panic!("Got {:?}", addr),
         }
     }
 
@@ -412,7 +412,7 @@ mod tests {
             UniAddrInner::Host(host) => {
                 assert_eq!(&**host, "example.com:8080");
             }
-            _ => unreachable!(),
+            _ => panic!("Got {:?}", addr),
         }
     }
 
