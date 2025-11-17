@@ -347,9 +347,6 @@ impl From<ParseError> for io::Error {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use std::os::linux::net::SocketAddrExt;
-
     use super::*;
 
     #[test]
@@ -391,9 +388,14 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "android", target_os = "linux"))]
     #[test]
     fn test_socket_addr_new_unix_abstract() {
+        #[cfg(target_os = "android")]
+        use std::os::android::net::SocketAddrExt;
+        #[cfg(target_os = "linux")]
+        use std::os::linux::net::SocketAddrExt;
+
         let addr = UniAddr::new("unix://@test.abstract").unwrap();
 
         match addr.as_inner() {
@@ -447,8 +449,11 @@ mod tests {
             let addr = UniAddr::new("unix:///tmp/test.sock").unwrap();
             assert_eq!(&addr.to_str(), "unix:///tmp/test.sock");
 
-            let addr = UniAddr::new("unix://@test.abstract").unwrap();
-            assert_eq!(&addr.to_str(), "unix://@test.abstract");
+            #[cfg(any(target_os = "android", target_os = "linux"))]
+            {
+                let addr = UniAddr::new("unix://@test.abstract").unwrap();
+                assert_eq!(&addr.to_str(), "unix://@test.abstract");
+            }
         }
 
         let addr = UniAddr::new("example.com:8080").unwrap();

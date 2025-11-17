@@ -106,6 +106,9 @@ impl SocketAddr {
     ///
     /// Returns an error if the name is longer than `SUN_LEN - 1`.
     pub fn new_abstract(bytes: &[u8]) -> io::Result<Self> {
+        #[cfg(target_os = "android")]
+        use std::os::android::net::SocketAddrExt;
+        #[cfg(target_os = "linux")]
         use std::os::linux::net::SocketAddrExt;
 
         std::os::unix::net::SocketAddr::from_abstract_name(bytes).map(Self::const_from)
@@ -118,8 +121,6 @@ impl SocketAddr {
     ///
     /// See [`SocketAddr::new_abstract`].
     pub fn new_abstract_strict(bytes: &[u8]) -> io::Result<Self> {
-        use std::os::linux::net::SocketAddrExt;
-
         if bytes.is_empty() || bytes.contains(&b'\0') {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -127,7 +128,7 @@ impl SocketAddr {
             ));
         }
 
-        std::os::unix::net::SocketAddr::from_abstract_name(bytes).map(Self::const_from)
+        Self::new_abstract(bytes)
     }
 
     /// Constructs a [`SocketAddr`] with the family `AF_UNIX` and the provided
@@ -178,6 +179,7 @@ impl SocketAddr {
     pub fn from_bytes_until_nul(bytes: &[u8]) -> io::Result<Self> {
         #[allow(clippy::single_match_else)]
         match bytes {
+            #[cfg(any(target_os = "android", target_os = "linux"))]
             [b'\0', rest @ ..] => {
                 let addr = CStr::from_bytes_until_nul(rest)
                     .map(CStr::to_bytes)
@@ -185,6 +187,11 @@ impl SocketAddr {
 
                 Self::new_abstract_strict(addr)
             }
+            #[cfg(not(any(target_os = "android", target_os = "linux")))]
+            [b'\0', ..] => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "abstract unix socket address is not supported",
+            )),
             _ => {
                 let addr = CStr::from_bytes_until_nul(bytes)
                     .map(CStr::to_bytes)
@@ -220,6 +227,10 @@ impl SocketAddr {
             .into_owned()
     }
 
+    #[cfg_attr(
+        not(any(target_os = "android", target_os = "linux")),
+        allow(unused_variables)
+    )]
     pub(crate) fn to_os_string_impl(&self, prefix: &str, abstract_identifier: &str) -> OsString {
         let mut os_string = OsString::from(prefix);
 
@@ -232,6 +243,9 @@ impl SocketAddr {
 
         #[cfg(any(target_os = "android", target_os = "linux"))]
         {
+            #[cfg(target_os = "android")]
+            use std::os::android::net::SocketAddrExt;
+            #[cfg(target_os = "linux")]
             use std::os::linux::net::SocketAddrExt;
 
             if let Some(abstract_name) = self.as_abstract_name() {
@@ -261,6 +275,9 @@ impl PartialEq for SocketAddr {
 
         #[cfg(any(target_os = "android", target_os = "linux"))]
         {
+            #[cfg(target_os = "android")]
+            use std::os::android::net::SocketAddrExt;
+            #[cfg(target_os = "linux")]
             use std::os::linux::net::SocketAddrExt;
 
             if let Some((l, r)) = self.as_abstract_name().zip(other.as_abstract_name()) {
@@ -288,6 +305,9 @@ impl Hash for SocketAddr {
 
         #[cfg(any(target_os = "android", target_os = "linux"))]
         {
+            #[cfg(target_os = "android")]
+            use std::os::android::net::SocketAddrExt;
+            #[cfg(target_os = "linux")]
             use std::os::linux::net::SocketAddrExt;
 
             if let Some(abstract_name) = self.as_abstract_name() {
@@ -328,10 +348,6 @@ impl<'de> serde::Deserialize<'de> for SocketAddr {
 
 #[cfg(test)]
 mod tests {
-    use core::hash::{BuildHasher, Hash, Hasher};
-
-    use foldhash::fast::RandomState;
-
     use super::*;
 
     #[test]
@@ -357,6 +373,9 @@ mod tests {
     #[test]
     #[cfg(any(target_os = "android", target_os = "linux"))]
     fn test_abstract() {
+        #[cfg(target_os = "android")]
+        use std::os::android::net::SocketAddrExt;
+        #[cfg(target_os = "linux")]
         use std::os::linux::net::SocketAddrExt;
 
         const TEST_CASE_1: &[u8] = b"@abstract.socket";
@@ -421,6 +440,10 @@ mod tests {
 
         #[cfg(any(target_os = "android", target_os = "linux"))]
         {
+            use core::hash::{BuildHasher, Hash, Hasher};
+
+            use foldhash::fast::RandomState;
+
             let addr_abstract_1 = SocketAddr::new_abstract(b"/tmp/test_pathname_1.socket").unwrap();
             let addr_abstract_2 = SocketAddr::new_abstract(b"/tmp/test_pathname_2.socket").unwrap();
             let addr_abstract_empty = SocketAddr::new_abstract(&[]).unwrap();
