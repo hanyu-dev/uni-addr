@@ -126,7 +126,7 @@ dependencies = [
 
 [[package]]
 name = "uni-addr"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "foldhash",
  "serde",
