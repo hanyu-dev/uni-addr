@@ -53,15 +53,15 @@ impl SocketAddr {
     /// current platform.
     ///
     /// See [`SocketAddr::from_abstract_name`](std::os::linux::net::SocketAddrExt::from_abstract_name)
-    /// and [`StdSocketAddr::from_pathname`] for more details.
+    /// and [`SocketAddr::from_pathname`](std::os::unix::net::SocketAddr::from_pathname) for more details.
     pub fn new<S: AsRef<OsStr> + ?Sized>(addr: &S) -> io::Result<Self> {
         let addr = addr.as_ref();
 
         match addr.as_bytes() {
             #[cfg(any(target_os = "android", target_os = "linux"))]
-            [b'@', rest @ ..] | [b'\0', rest @ ..] => Self::new_abstract(rest),
+            [b'@' | b'\0', rest @ ..] => Self::new_abstract(rest),
             #[cfg(not(any(target_os = "android", target_os = "linux")))]
-            [b'@', ..] | [b'\0', ..] => Err(io::Error::new(
+            [b'@' | b'\0', ..] => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "abstract unix socket address is not supported",
             )),
@@ -70,14 +70,18 @@ impl SocketAddr {
     }
 
     /// See [`SocketAddr::new`].
+    ///
+    /// # Errors
+    ///
+    /// See [`SocketAddr::new`].
     pub fn new_strict<S: AsRef<OsStr> + ?Sized>(addr: &S) -> io::Result<Self> {
         let addr = addr.as_ref();
 
         match addr.as_bytes() {
             #[cfg(any(target_os = "android", target_os = "linux"))]
-            [b'@', rest @ ..] | [b'\0', rest @ ..] => Self::new_abstract_strict(rest),
+            [b'@' | b'\0', rest @ ..] => Self::new_abstract_strict(rest),
             #[cfg(not(any(target_os = "android", target_os = "linux")))]
-            [b'@', ..] | [b'\0', ..] => Err(io::Error::new(
+            [b'@' | b'\0', ..] => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "abstract unix socket address is not supported",
             )),
@@ -108,6 +112,10 @@ impl SocketAddr {
     }
 
     #[cfg(any(target_os = "android", target_os = "linux"))]
+    /// See [`SocketAddr::new_abstract`].
+    ///
+    /// # Errors
+    ///
     /// See [`SocketAddr::new_abstract`].
     pub fn new_abstract_strict(bytes: &[u8]) -> io::Result<Self> {
         use std::os::linux::net::SocketAddrExt;
@@ -168,17 +176,18 @@ impl SocketAddr {
     ///
     /// See [`SocketAddr::new`].
     pub fn from_bytes_until_nul(bytes: &[u8]) -> io::Result<Self> {
+        #[allow(clippy::single_match_else)]
         match bytes {
             [b'\0', rest @ ..] => {
                 let addr = CStr::from_bytes_until_nul(rest)
-                    .map(|rest| rest.to_bytes())
+                    .map(CStr::to_bytes)
                     .unwrap_or(rest);
 
                 Self::new_abstract_strict(addr)
             }
             _ => {
                 let addr = CStr::from_bytes_until_nul(bytes)
-                    .map(|rest| rest.to_bytes())
+                    .map(CStr::to_bytes)
                     .unwrap_or(bytes);
 
                 Self::new_pathname(OsStr::from_bytes(addr))
@@ -319,8 +328,9 @@ impl<'de> serde::Deserialize<'de> for SocketAddr {
 
 #[cfg(test)]
 mod tests {
-    use core::hash::{Hash, Hasher};
-    use std::hash::DefaultHasher;
+    use core::hash::{BuildHasher, Hash, Hasher};
+
+    use foldhash::fast::RandomState;
 
     use super::*;
 
@@ -414,7 +424,7 @@ mod tests {
             let addr_abstract_1 = SocketAddr::new_abstract(b"/tmp/test_pathname_1.socket").unwrap();
             let addr_abstract_2 = SocketAddr::new_abstract(b"/tmp/test_pathname_2.socket").unwrap();
             let addr_abstract_empty = SocketAddr::new_abstract(&[]).unwrap();
-            let addr_abstract_unnamed_hash = SocketAddr::new_abstract(b"(unamed)\0").unwrap();
+            let addr_abstract_unnamed = SocketAddr::new_abstract(b"(unamed)\0").unwrap();
 
             assert_eq!(addr_abstract_1, addr_abstract_1);
             assert_ne!(addr_abstract_1, addr_abstract_2);
@@ -428,14 +438,15 @@ mod tests {
 
             // Abstract unnamed address `@(unamed)\0`' hash should not be equal to unname
             // ones'
+            let state = RandomState::default();
             let addr_unnamed_hash = {
-                let mut state = DefaultHasher::new();
+                let mut state = state.build_hasher();
                 addr_unnamed.hash(&mut state);
                 state.finish()
             };
             let addr_abstract_unnamed_hash = {
-                let mut state = DefaultHasher::new();
-                addr_abstract_unnamed_hash.hash(&mut state);
+                let mut state = state.build_hasher();
+                addr_abstract_unnamed.hash(&mut state);
                 state.finish()
             };
             assert_ne!(addr_unnamed_hash, addr_abstract_unnamed_hash);

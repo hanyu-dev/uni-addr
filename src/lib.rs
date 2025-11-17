@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![allow(clippy::must_use_candidate)]
 
 use std::borrow::Cow;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -99,24 +100,26 @@ impl<'de> serde::Deserialize<'de> for UniAddr {
 impl UniAddr {
     #[inline]
     /// Creates a new [`UniAddr`] from its string representation.
+    ///
+    /// # Errors
+    ///
+    /// Not a valid address string.
     pub fn new(addr: &str) -> Result<Self, ParseError> {
         if addr.is_empty() {
             return Err(ParseError::Empty);
         }
 
+        #[cfg(unix)]
         if let Some(addr) = addr.strip_prefix(UNIX_URI_PREFIX) {
-            #[cfg(unix)]
-            {
-                return unix::SocketAddr::new(addr)
-                    .map(UniAddrInner::Unix)
-                    .map(Self::const_from)
-                    .map_err(ParseError::InvalidUDSAddress);
-            }
+            return unix::SocketAddr::new(addr)
+                .map(UniAddrInner::Unix)
+                .map(Self::const_from)
+                .map_err(ParseError::InvalidUDSAddress);
+        }
 
-            #[cfg(not(unix))]
-            {
-                return Err(ParseError::Unsupported);
-            }
+        #[cfg(not(unix))]
+        if let Some(addr) = addr.strip_prefix(UNIX_URI_PREFIX) {
+            return Err(ParseError::Unsupported);
         }
 
         let Some((host, port)) = addr.rsplit_once(':') else {
@@ -156,6 +159,11 @@ impl UniAddr {
 
     /// Creates a new [`UniAddr`] from a string containing a host name and port,
     /// like `example.com:8080`.
+    ///
+    /// # Errors
+    ///
+    /// - [`ParseError::InvalidHost`] if the host name is invalid.
+    /// - [`ParseError::InvalidPort`] if the port is invalid.
     pub fn new_host(addr: &str, parsed: Option<(&str, u16)>) -> Result<Self, ParseError> {
         let (hostname, _port) = match parsed {
             Some((hostname, port)) => (hostname, port),
@@ -171,7 +179,7 @@ impl UniAddr {
                 })?,
         };
 
-        Self::validate_host_name(hostname.as_bytes()).map_err(|_| ParseError::InvalidHost)?;
+        Self::validate_host_name(hostname.as_bytes()).map_err(|()| ParseError::InvalidHost)?;
 
         Ok(Self::const_from(UniAddrInner::Host(Arc::from(addr))))
     }
@@ -187,15 +195,15 @@ impl UniAddr {
             Hyphen { len: usize },
         }
 
-        use State::*;
-
-        let mut state = Start;
+        use State::{Hyphen, Next, NextAfterNumericOnly, NumericOnly, Start, Subsequent};
 
         /// "Labels must be 63 characters or less."
         const MAX_LABEL_LENGTH: usize = 63;
 
-        /// https://devblogs.microsoft.com/oldnewthing/20120412-00/?p=7873
+        /// <https://devblogs.microsoft.com/oldnewthing/20120412-00/?p=7873>
         const MAX_NAME_LENGTH: usize = 253;
+
+        let mut state = Start;
 
         if input.len() > MAX_NAME_LENGTH {
             return Err(());
@@ -257,8 +265,8 @@ impl UniAddr {
 /// we expose this type only for easier pattern matching. A valid [`UniAddr`]
 /// can be constructed only through [`FromStr`] implementation.
 pub enum UniAddrInner {
-    /// See [`SocketAddr`](std::net::SocketAddr).
-    Inet(std::net::SocketAddr),
+    /// See [`SocketAddr`].
+    Inet(SocketAddr),
 
     #[cfg(unix)]
     /// See [`SocketAddr`](crate::unix::SocketAddr).
@@ -315,7 +323,7 @@ impl fmt::Display for ParseError {
             Self::Empty => write!(f, "empty address string"),
             Self::InvalidHost => write!(f, "invalid or missing host address"),
             Self::InvalidPort => write!(f, "invalid or missing port"),
-            Self::InvalidUDSAddress(err) => write!(f, "invalid UDS address: {}", err),
+            Self::InvalidUDSAddress(err) => write!(f, "invalid UDS address: {err}"),
             Self::Unsupported => write!(f, "unsupported address type on this platform"),
         }
     }
