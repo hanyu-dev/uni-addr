@@ -85,6 +85,11 @@ impl TryFrom<&socket2::SockAddr> for UniAddr {
             return Ok(Self::from(addr));
         }
 
+        #[cfg(unix)]
+        if addr.is_unnamed() {
+            return Ok(Self::from(crate::unix::SocketAddr::new_unnamed()));
+        }
+
         #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
         if let Some(addr) = addr.as_abstract_namespace() {
             return crate::unix::SocketAddr::new_abstract(addr).map(Self::from);
@@ -514,6 +519,7 @@ mod tests {
     #[case("[::1]:0")]
     #[case("[::1]:8080")]
     #[cfg_attr(unix, case("unix:///tmp/test_socket2_sock_addr_conversion.socket"))]
+    #[cfg_attr(unix, case("unix://"))]
     #[cfg_attr(
         any(target_os = "android", target_os = "linux", target_os = "cygwin"),
         case("unix://@test_socket2_sock_addr_conversion.socket")
