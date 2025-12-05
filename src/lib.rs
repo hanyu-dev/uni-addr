@@ -303,7 +303,7 @@ impl UniAddr {
 
         if matches!(
             state,
-            Start | Hyphen { .. } | NumericOnly { .. } | NextAfterNumericOnly
+            Start | Hyphen { .. } | NumericOnly { .. } | NextAfterNumericOnly | Next
         ) {
             return Err(());
         }
@@ -408,168 +408,124 @@ impl From<ParseError> for io::Error {
 
 #[cfg(test)]
 mod tests {
+    #![allow(non_snake_case)]
+
+    use rstest::rstest;
+
     use super::*;
 
-    #[test]
-    fn test_socket_addr_new_ipv4() {
-        let addr = UniAddr::new("127.0.0.1:8080").unwrap();
+    #[rstest]
+    #[case("0.0.0.0:0")]
+    #[case("0.0.0.0:8080")]
+    #[case("127.0.0.1:0")]
+    #[case("127.0.0.1:8080")]
+    #[case("[::]:0")]
+    #[case("[::]:8080")]
+    #[case("[::1]:0")]
+    #[case("[::1]:8080")]
+    #[case("example.com:8080")]
+    #[case("1example.com:8080")]
+    #[cfg_attr(unix, case("unix://"))]
+    #[cfg_attr(
+        any(target_os = "android", target_os = "linux", target_os = "cygwin"),
+        case("unix://@")
+    )]
+    #[cfg_attr(unix, case("unix:///tmp/test_UniAddr_new_Display.socket"))]
+    #[cfg_attr(
+        any(target_os = "android", target_os = "linux", target_os = "cygwin"),
+        case("unix://@test_UniAddr_new_Display.socket")
+    )]
+    fn test_UniAddr_new_Display(#[case] addr: &str) {
+        let addr_displayed = UniAddr::new(addr).unwrap().to_string();
 
-        match addr.as_inner() {
-            UniAddrInner::Inet(std_addr) => {
-                assert_eq!(std_addr.ip().to_string(), "127.0.0.1");
-                assert_eq!(std_addr.port(), 8080);
-            }
-            _ => panic!("Got {:?}", addr),
-        }
+        assert_eq!(
+            addr_displayed, addr,
+            "addr_displayed {addr_displayed:?} != {addr:?}"
+        );
     }
 
-    #[test]
-    fn test_socket_addr_new_ipv6() {
-        let addr = UniAddr::new("[::1]:8080").unwrap();
+    #[rstest]
+    #[case("example.com:8080")]
+    #[case("1example.com:8080")]
+    #[should_panic]
+    #[case::panic("1example.com")]
+    #[should_panic]
+    #[case::panic("1example.com.")]
+    #[should_panic]
+    #[case::panic("1example.com.:14514")]
+    #[should_panic]
+    #[case::panic("1example.com:1919810")]
+    #[should_panic]
+    #[case::panic("this-is-a-long-host-name-this-is-a-long-host-name-this-is-a-long-host-name-this-is-a-long-host-name-this-is-a-long-host-name-this-is-a-long-host-name-this-is-a-long-host-name-this-is-a-long-host-name-this-is-a-long-host-name-this-is-a-long-host-name-this-is-a-long-host-name:19810")]
+    fn test_UniAddr_new_host(#[case] addr: &str) {
+        let addr_displayed = UniAddr::new_host(addr, None).unwrap().to_string();
 
-        match addr.as_inner() {
-            UniAddrInner::Inet(std_addr) => {
-                assert_eq!(std_addr.ip().to_string(), "::1");
-                assert_eq!(std_addr.port(), 8080);
-            }
-            _ => panic!("Got {:?}", addr),
-        }
+        assert_eq!(
+            addr_displayed, addr,
+            "addr_displayed {addr_displayed:?} != {addr:?}"
+        );
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn test_socket_addr_new_unix_pathname() {
-        let addr = UniAddr::new("unix:///tmp/test.sock").unwrap();
-
-        match addr.as_inner() {
-            UniAddrInner::Unix(unix_addr) => {
-                assert!(unix_addr.as_pathname().is_some());
-            }
-            _ => panic!("Got {:?}", addr),
-        }
-    }
-
-    #[cfg(any(target_os = "android", target_os = "linux"))]
-    #[test]
-    fn test_socket_addr_new_unix_abstract() {
-        #[cfg(target_os = "android")]
-        use std::os::android::net::SocketAddrExt;
-        #[cfg(target_os = "linux")]
-        use std::os::linux::net::SocketAddrExt;
-
-        let addr = UniAddr::new("unix://@test.abstract").unwrap();
-
-        match addr.as_inner() {
-            UniAddrInner::Unix(unix_addr) => {
-                assert!(unix_addr.as_abstract_name().is_some());
-            }
-            _ => panic!("Got {:?}", addr),
-        }
-    }
-
-    #[test]
-    fn test_socket_addr_new_host() {
-        let addr = UniAddr::new("example.com:8080").unwrap();
-
-        match addr.as_inner() {
-            UniAddrInner::Host(host) => {
-                assert_eq!(&**host, "example.com:8080");
-            }
-            _ => panic!("Got {:?}", addr),
-        }
-    }
-
-    #[test]
-    fn test_socket_addr_new_invalid() {
-        // Invalid format
-        assert!(UniAddr::new("invalid").is_err());
-        assert!(UniAddr::new("127.0.0.1").is_err()); // Missing port
-        assert!(UniAddr::new("example.com:invalid").is_err()); // Invalid port
-        assert!(UniAddr::new("127.0.0.1:invalid").is_err()); // Invalid port
+    #[rstest]
+    #[should_panic]
+    #[case::panic("")]
+    #[should_panic]
+    #[case::panic("not-an-address")]
+    #[should_panic]
+    #[case::panic("127.0.0.1")]
+    #[should_panic]
+    #[case::panic("127.0.0.1:99999")]
+    #[should_panic]
+    #[case::panic("127.0.0.256:99999")]
+    #[should_panic]
+    #[case::panic("::1")]
+    #[should_panic]
+    #[case::panic("[::1]")]
+    #[should_panic]
+    #[case::panic("[::1]:99999")]
+    #[should_panic]
+    #[case::panic("[::gg]:99999")]
+    #[should_panic]
+    #[case::panic("example.com")]
+    #[should_panic]
+    #[case::panic("example.com:99999")]
+    #[should_panic]
+    #[case::panic("examp😀le.com:99999")]
+    fn test_UniAddr_new_invalid(#[case] addr: &str) {
+        let _ = UniAddr::new(addr).unwrap();
     }
 
     #[cfg(not(unix))]
     #[test]
-    fn test_socket_addr_new_unix_unsupported() {
+    fn test_UniAddr_new_unsupported() {
         // Unix sockets should be unsupported on non-Unix platforms
         let result = UniAddr::new("unix:///tmp/test.sock");
 
         assert!(matches!(result.unwrap_err(), ParseError::Unsupported));
     }
 
-    #[test]
-    fn test_socket_addr_display() {
-        let addr = UniAddr::new("127.0.0.1:8080").unwrap();
-        assert_eq!(&addr.to_str(), "127.0.0.1:8080");
+    #[rstest]
+    #[case("0.0.0.0:0")]
+    #[case("0.0.0.0:8080")]
+    #[case("127.0.0.1:0")]
+    #[case("127.0.0.1:8080")]
+    #[case("[::]:0")]
+    #[case("[::]:8080")]
+    #[case("[::1]:0")]
+    #[case("[::1]:8080")]
+    #[cfg_attr(unix, case("unix:///tmp/test_socket2_sock_addr_conversion.socket"))]
+    #[cfg_attr(
+        any(target_os = "android", target_os = "linux", target_os = "cygwin"),
+        case("unix://@test_socket2_sock_addr_conversion.socket")
+    )]
+    fn test_socket2_SockAddr_conversion(#[case] addr: &str) {
+        let uni_addr = UniAddr::new(addr).unwrap();
+        let sock_addr = socket2::SockAddr::try_from(&uni_addr).unwrap();
+        let uni_addr_converted = UniAddr::try_from(sock_addr).unwrap();
 
-        let addr = UniAddr::new("[::1]:8080").unwrap();
-        assert_eq!(&addr.to_str(), "[::1]:8080");
-
-        #[cfg(unix)]
-        {
-            let addr = UniAddr::new("unix:///tmp/test.sock").unwrap();
-            assert_eq!(&addr.to_str(), "unix:///tmp/test.sock");
-
-            #[cfg(any(target_os = "android", target_os = "linux"))]
-            {
-                let addr = UniAddr::new("unix://@test.abstract").unwrap();
-                assert_eq!(&addr.to_str(), "unix://@test.abstract");
-            }
-        }
-
-        let addr = UniAddr::new("example.com:8080").unwrap();
-        assert_eq!(&addr.to_str(), "example.com:8080");
-    }
-
-    #[test]
-    fn test_socket_addr_debug() {
-        let addr = UniAddr::new("127.0.0.1:8080").unwrap();
-        let debug_str = format!("{:?}", addr);
-
-        assert!(debug_str.contains("127.0.0.1:8080"));
-    }
-
-    #[test]
-    fn test_edge_cases() {
-        assert!(UniAddr::new("").is_err());
-        assert!(UniAddr::new("not-an-address").is_err());
-        assert!(UniAddr::new("127.0.0.1:99999").is_err()); // Port too high
-
-        #[cfg(unix)]
-        {
-            assert!(UniAddr::new("unix://").is_ok()); // Empty path -> unnamed one
-            #[cfg(any(target_os = "android", target_os = "linux"))]
-            assert!(UniAddr::new("unix://@").is_ok()); // Empty abstract one
-        }
-    }
-
-    #[test]
-    fn test_socket2_sock_addr_conversion() {
-        let addr = UniAddr::new("127.0.0.1:8080").unwrap();
-        let sock_addr = socket2::SockAddr::try_from(&addr).unwrap();
-        let addr_converted = UniAddr::try_from(sock_addr).unwrap();
-        assert_eq!(addr, addr_converted);
-
-        let addr = UniAddr::new("[::]:8080").unwrap();
-        let sock_addr = socket2::SockAddr::try_from(&addr).unwrap();
-        let addr_converted = UniAddr::try_from(sock_addr).unwrap();
-        assert_eq!(addr, addr_converted);
-
-        #[cfg(unix)]
-        {
-            let addr =
-                UniAddr::new("unix:///tmp/test_socket2_sock_addr_conversion.socket").unwrap();
-            let sock_addr = socket2::SockAddr::try_from(&addr).unwrap();
-            let addr_converted = UniAddr::try_from(sock_addr).unwrap();
-            assert_eq!(addr, addr_converted);
-        }
-
-        #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
-        {
-            let addr = UniAddr::new("unix://@test_socket2_sock_addr_conversion.socket").unwrap();
-            let sock_addr = socket2::SockAddr::try_from(&addr).unwrap();
-            let addr_converted = UniAddr::try_from(sock_addr).unwrap();
-            assert_eq!(addr, addr_converted);
-        }
+        assert_eq!(
+            uni_addr, uni_addr_converted,
+            "{uni_addr} != {uni_addr_converted}"
+        );
     }
 }
