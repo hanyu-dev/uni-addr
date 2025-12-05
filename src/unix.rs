@@ -38,7 +38,7 @@ impl SocketAddr {
     ///
     /// ```rust
     /// # use uni_addr::unix::SocketAddr;
-    /// #[cfg(any(target_os = "android", target_os = "linux"))]
+    /// #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
     /// // Abstract address (Linux-specific)
     /// let abstract_addr = SocketAddr::new("@abstract.example.socket").unwrap();
     /// // Pathname address
@@ -58,9 +58,9 @@ impl SocketAddr {
         let addr = addr.as_ref();
 
         match addr.as_bytes() {
-            #[cfg(any(target_os = "android", target_os = "linux"))]
+            #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
             [b'@' | b'\0', rest @ ..] => Self::new_abstract(rest),
-            #[cfg(not(any(target_os = "android", target_os = "linux")))]
+            #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "cygwin")))]
             [b'@' | b'\0', ..] => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "abstract unix socket address is not supported",
@@ -78,9 +78,9 @@ impl SocketAddr {
         let addr = addr.as_ref();
 
         match addr.as_bytes() {
-            #[cfg(any(target_os = "android", target_os = "linux"))]
+            #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
             [b'@' | b'\0', rest @ ..] => Self::new_abstract_strict(rest),
-            #[cfg(not(any(target_os = "android", target_os = "linux")))]
+            #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "cygwin")))]
             [b'@' | b'\0', ..] => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "abstract unix socket address is not supported",
@@ -89,7 +89,7 @@ impl SocketAddr {
         }
     }
 
-    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
     /// Creates a Unix socket address in the abstract namespace.
     ///
     /// The abstract namespace is a Linux-specific extension that allows Unix
@@ -108,13 +108,15 @@ impl SocketAddr {
     pub fn new_abstract(bytes: &[u8]) -> io::Result<Self> {
         #[cfg(target_os = "android")]
         use std::os::android::net::SocketAddrExt;
+        #[cfg(target_os = "cygwin")]
+        use std::os::cygwin::net::SocketAddrExt;
         #[cfg(target_os = "linux")]
         use std::os::linux::net::SocketAddrExt;
 
         std::os::unix::net::SocketAddr::from_abstract_name(bytes).map(Self::from_inner)
     }
 
-    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
     /// See [`SocketAddr::new_abstract`].
     ///
     /// # Errors
@@ -179,7 +181,7 @@ impl SocketAddr {
     pub fn from_bytes_until_nul(bytes: &[u8]) -> io::Result<Self> {
         #[allow(clippy::single_match_else)]
         match bytes {
-            #[cfg(any(target_os = "android", target_os = "linux"))]
+            #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
             [b'\0', rest @ ..] => {
                 let addr = CStr::from_bytes_until_nul(rest)
                     .map(CStr::to_bytes)
@@ -187,7 +189,7 @@ impl SocketAddr {
 
                 Self::new_abstract_strict(addr)
             }
-            #[cfg(not(any(target_os = "android", target_os = "linux")))]
+            #[cfg(not(any(target_os = "android", target_os = "linux", target_os = "cygwin")))]
             [b'\0', ..] => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "abstract unix socket address is not supported",
@@ -228,7 +230,7 @@ impl SocketAddr {
     }
 
     #[cfg_attr(
-        not(any(target_os = "android", target_os = "linux")),
+        not(any(target_os = "android", target_os = "linux", target_os = "cygwin")),
         allow(unused_variables)
     )]
     pub(crate) fn to_os_string_impl(&self, prefix: &str, abstract_identifier: &str) -> OsString {
@@ -241,10 +243,12 @@ impl SocketAddr {
             return os_string;
         }
 
-        #[cfg(any(target_os = "android", target_os = "linux"))]
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
         {
             #[cfg(target_os = "android")]
             use std::os::android::net::SocketAddrExt;
+            #[cfg(target_os = "cygwin")]
+            use std::os::cygwin::net::SocketAddrExt;
             #[cfg(target_os = "linux")]
             use std::os::linux::net::SocketAddrExt;
 
@@ -273,10 +277,12 @@ impl PartialEq for SocketAddr {
             return l == r;
         }
 
-        #[cfg(any(target_os = "android", target_os = "linux"))]
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
         {
             #[cfg(target_os = "android")]
             use std::os::android::net::SocketAddrExt;
+            #[cfg(target_os = "cygwin")]
+            use std::os::cygwin::net::SocketAddrExt;
             #[cfg(target_os = "linux")]
             use std::os::linux::net::SocketAddrExt;
 
@@ -303,10 +309,12 @@ impl Hash for SocketAddr {
             return;
         }
 
-        #[cfg(any(target_os = "android", target_os = "linux"))]
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
         {
             #[cfg(target_os = "android")]
             use std::os::android::net::SocketAddrExt;
+            #[cfg(target_os = "cygwin")]
+            use std::os::cygwin::net::SocketAddrExt;
             #[cfg(target_os = "linux")]
             use std::os::linux::net::SocketAddrExt;
 
@@ -371,10 +379,12 @@ mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "android", target_os = "linux"))]
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
     fn test_abstract() {
         #[cfg(target_os = "android")]
         use std::os::android::net::SocketAddrExt;
+        #[cfg(target_os = "cygwin")]
+        use std::os::cygwin::net::SocketAddrExt;
         #[cfg(target_os = "linux")]
         use std::os::linux::net::SocketAddrExt;
 
@@ -438,7 +448,7 @@ mod tests {
         assert_ne!(addr_pathname_2, addr_unnamed);
         assert_ne!(addr_unnamed, addr_pathname_2);
 
-        #[cfg(any(target_os = "android", target_os = "linux"))]
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
         {
             use core::hash::{BuildHasher, Hash, Hasher};
 
