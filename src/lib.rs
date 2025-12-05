@@ -2,7 +2,7 @@
 #![allow(clippy::must_use_candidate)]
 
 use std::borrow::Cow;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{fmt, io};
@@ -316,6 +316,74 @@ impl UniAddr {
         Ok(())
     }
 
+    /// Resolves the address if it is a host name.
+    ///
+    /// By default, we utilize the method [`ToSocketAddrs::to_socket_addrs`]
+    /// provided by the standard library to perform DNS resolution, which is a
+    /// **blocking** operation and may take an arbitrary amount of time to
+    /// complete, use with caution when called in asynchronous contexts.
+    ///
+    /// # Errors
+    ///
+    /// Resolution failure, or if no socket address resolved.
+    pub fn blocking_resolve_socket_addrs(&mut self) -> io::Result<()> {
+        self.blocking_resolve_socket_addrs_with(ToSocketAddrs::to_socket_addrs)
+    }
+
+    /// Resolves the address if it is a host name using a custom resolver
+    /// function.
+    ///
+    /// # Errors
+    ///
+    /// Resolution failure, or if no socket address resolved.
+    pub fn blocking_resolve_socket_addrs_with<F, A>(&mut self, f: F) -> io::Result<()>
+    where
+        F: FnOnce(&str) -> io::Result<A>,
+        A: Iterator<Item = SocketAddr>,
+    {
+        if let UniAddrInner::Host(addr) = self.as_inner() {
+            let resolved = f(addr)?.next().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "Host resolution failed, no available address",
+                )
+            })?;
+
+            *self = Self::from_inner(UniAddrInner::Inet(resolved));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "feat-tokio")]
+    /// Asynchronously resolves the address if it is a host name.
+    ///
+    /// This method will spawn a blocking Tokio task to perform the resolution
+    /// using [`ToSocketAddrs::to_socket_addrs`] provided by the standard
+    /// library.
+    ///
+    /// # Errors
+    ///
+    /// Resolution failure, or if no socket address resolved.
+    pub async fn resolve_socket_addrs(&mut self) -> io::Result<()> {
+        if let UniAddrInner::Host(addr) = self.as_inner() {
+            let addr = addr.clone();
+            let resolved = tokio::task::spawn_blocking(move || addr.to_socket_addrs())
+                .await??
+                .next()
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        "Host resolution failed, no available address",
+                    )
+                })?;
+
+            *self = Self::from_inner(UniAddrInner::Inet(resolved));
+        }
+
+        Ok(())
+    }
+
     #[inline]
     /// Serializes the address to a string.
     pub fn to_str(&self) -> Cow<'_, str> {
@@ -338,7 +406,11 @@ pub enum UniAddrInner {
     /// See [`SocketAddr`](crate::unix::SocketAddr).
     Unix(crate::unix::SocketAddr),
 
-    /// A host name with port. See [`ToSocketAddrs`](std::net::ToSocketAddrs).
+    /// A host name with port.
+    ///
+    /// Please refer to [`ToSocketAddrs`], and
+    /// [`UniAddr::blocking_resolve_socket_addrs`], etc to resolve the
+    /// address when needed.
     Host(Arc<str>),
 }
 
