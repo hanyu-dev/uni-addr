@@ -44,28 +44,28 @@ wrapper_lite::wrapper!(
 
 impl From<SocketAddr> for UniAddr {
     fn from(addr: SocketAddr) -> Self {
-        UniAddr::const_from(UniAddrInner::Inet(addr))
+        UniAddr::from_inner(UniAddrInner::Inet(addr))
     }
 }
 
 #[cfg(unix)]
 impl From<std::os::unix::net::SocketAddr> for UniAddr {
     fn from(addr: std::os::unix::net::SocketAddr) -> Self {
-        UniAddr::const_from(UniAddrInner::Unix(addr.into()))
+        UniAddr::from_inner(UniAddrInner::Unix(addr.into()))
     }
 }
 
 #[cfg(all(unix, feature = "feat-tokio"))]
 impl From<tokio::net::unix::SocketAddr> for UniAddr {
     fn from(addr: tokio::net::unix::SocketAddr) -> Self {
-        UniAddr::const_from(UniAddrInner::Unix(unix::SocketAddr::from(addr.into())))
+        UniAddr::from_inner(UniAddrInner::Unix(unix::SocketAddr::from(addr.into())))
     }
 }
 
 #[cfg(unix)]
 impl From<crate::unix::SocketAddr> for UniAddr {
     fn from(addr: crate::unix::SocketAddr) -> Self {
-        UniAddr::const_from(UniAddrInner::Unix(addr))
+        UniAddr::from_inner(UniAddrInner::Unix(addr))
     }
 }
 
@@ -113,7 +113,7 @@ impl UniAddr {
         if let Some(addr) = addr.strip_prefix(UNIX_URI_PREFIX) {
             return unix::SocketAddr::new(addr)
                 .map(UniAddrInner::Unix)
-                .map(Self::const_from)
+                .map(Self::from_inner)
                 .map_err(ParseError::InvalidUDSAddress);
         }
 
@@ -135,7 +135,7 @@ impl UniAddr {
             return Ipv4Addr::from_str(host)
                 .map(|ip| SocketAddr::V4(SocketAddrV4::new(ip, port)))
                 .map(UniAddrInner::Inet)
-                .map(Self::const_from)
+                .map(Self::from_inner)
                 .map_err(|_| ParseError::InvalidHost)
                 .or_else(|_| {
                     // A host name may also start with a digit.
@@ -149,7 +149,7 @@ impl UniAddr {
             return Ipv6Addr::from_str(ipv6_addr)
                 .map(|ip| SocketAddr::V6(SocketAddrV6::new(ip, port, 0, 0)))
                 .map(UniAddrInner::Inet)
-                .map(Self::const_from)
+                .map(Self::from_inner)
                 .map_err(|_| ParseError::InvalidHost);
         }
 
@@ -181,7 +181,7 @@ impl UniAddr {
 
         Self::validate_host_name(hostname.as_bytes()).map_err(|()| ParseError::InvalidHost)?;
 
-        Ok(Self::const_from(UniAddrInner::Host(Arc::from(addr))))
+        Ok(Self::from_inner(UniAddrInner::Host(Arc::from(addr))))
     }
 
     // https://github.com/rustls/pki-types/blob/b8c04aa6b7a34875e2c4a33edc9b78d31da49523/src/server_name.rs

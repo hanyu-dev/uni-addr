@@ -111,7 +111,7 @@ impl SocketAddr {
         #[cfg(target_os = "linux")]
         use std::os::linux::net::SocketAddrExt;
 
-        std::os::unix::net::SocketAddr::from_abstract_name(bytes).map(Self::const_from)
+        std::os::unix::net::SocketAddr::from_abstract_name(bytes).map(Self::from_inner)
     }
 
     #[cfg(any(target_os = "android", target_os = "linux"))]
@@ -141,7 +141,7 @@ impl SocketAddr {
     pub fn new_pathname<P: AsRef<Path>>(pathname: P) -> io::Result<Self> {
         let _ = fs::remove_file(pathname.as_ref());
 
-        std::os::unix::net::SocketAddr::from_pathname(pathname).map(Self::const_from)
+        std::os::unix::net::SocketAddr::from_pathname(pathname).map(Self::from_inner)
     }
 
     #[allow(clippy::missing_panics_doc)]
@@ -149,7 +149,7 @@ impl SocketAddr {
     pub fn new_unnamed() -> Self {
         // SAFETY: `from_pathname` will not fail at all.
         std::os::unix::net::SocketAddr::from_pathname("")
-            .map(Self::const_from)
+            .map(Self::from_inner)
             .unwrap()
     }
 
