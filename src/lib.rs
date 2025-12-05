@@ -62,6 +62,67 @@ impl From<tokio::net::unix::SocketAddr> for UniAddr {
     }
 }
 
+#[cfg(feature = "feat-socket2")]
+impl TryFrom<socket2::SockAddr> for UniAddr {
+    type Error = io::Error;
+
+    fn try_from(addr: socket2::SockAddr) -> Result<Self, Self::Error> {
+        UniAddr::try_from(&addr)
+    }
+}
+
+#[cfg(feature = "feat-socket2")]
+impl TryFrom<&socket2::SockAddr> for UniAddr {
+    type Error = io::Error;
+
+    fn try_from(addr: &socket2::SockAddr) -> Result<Self, Self::Error> {
+        if let Some(addr) = addr.as_socket() {
+            return Ok(Self::from(addr));
+        }
+
+        #[cfg(unix)]
+        if let Some(addr) = addr.as_unix() {
+            return Ok(Self::from(addr));
+        }
+
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
+        if let Some(addr) = addr.as_abstract_namespace() {
+            return crate::unix::SocketAddr::new_abstract(addr).map(Self::from);
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::Other,
+            "unsupported address type",
+        ))
+    }
+}
+
+#[cfg(feature = "feat-socket2")]
+impl TryFrom<UniAddr> for socket2::SockAddr {
+    type Error = io::Error;
+
+    fn try_from(addr: UniAddr) -> Result<Self, Self::Error> {
+        socket2::SockAddr::try_from(&addr)
+    }
+}
+
+#[cfg(feature = "feat-socket2")]
+impl TryFrom<&UniAddr> for socket2::SockAddr {
+    type Error = io::Error;
+
+    fn try_from(addr: &UniAddr) -> Result<Self, Self::Error> {
+        match &addr.inner {
+            UniAddrInner::Inet(addr) => Ok(socket2::SockAddr::from(*addr)),
+            #[cfg(unix)]
+            UniAddrInner::Unix(addr) => socket2::SockAddr::unix(addr.to_os_string()),
+            UniAddrInner::Host(_) => Err(io::Error::new(
+                io::ErrorKind::Other,
+                "The host name address must be resolved before converting to SockAddr",
+            )),
+        }
+    }
+}
+
 #[cfg(unix)]
 impl From<crate::unix::SocketAddr> for UniAddr {
     fn from(addr: crate::unix::SocketAddr) -> Self {
@@ -479,6 +540,36 @@ mod tests {
             assert!(UniAddr::new("unix://").is_ok()); // Empty path -> unnamed one
             #[cfg(any(target_os = "android", target_os = "linux"))]
             assert!(UniAddr::new("unix://@").is_ok()); // Empty abstract one
+        }
+    }
+
+    #[test]
+    fn test_socket2_sock_addr_conversion() {
+        let addr = UniAddr::new("127.0.0.1:8080").unwrap();
+        let sock_addr = socket2::SockAddr::try_from(&addr).unwrap();
+        let addr_converted = UniAddr::try_from(sock_addr).unwrap();
+        assert_eq!(addr, addr_converted);
+
+        let addr = UniAddr::new("[::]:8080").unwrap();
+        let sock_addr = socket2::SockAddr::try_from(&addr).unwrap();
+        let addr_converted = UniAddr::try_from(sock_addr).unwrap();
+        assert_eq!(addr, addr_converted);
+
+        #[cfg(unix)]
+        {
+            let addr =
+                UniAddr::new("unix:///tmp/test_socket2_sock_addr_conversion.socket").unwrap();
+            let sock_addr = socket2::SockAddr::try_from(&addr).unwrap();
+            let addr_converted = UniAddr::try_from(sock_addr).unwrap();
+            assert_eq!(addr, addr_converted);
+        }
+
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
+        {
+            let addr = UniAddr::new("unix://@test_socket2_sock_addr_conversion.socket").unwrap();
+            let sock_addr = socket2::SockAddr::try_from(&addr).unwrap();
+            let addr_converted = UniAddr::try_from(sock_addr).unwrap();
+            assert_eq!(addr, addr_converted);
         }
     }
 }
